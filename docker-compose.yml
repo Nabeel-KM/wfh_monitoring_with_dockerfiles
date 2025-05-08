@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+     - mongodb
+        # condition: service_healthy
+    ports:
+      - "5000:5000"
+    restart: always
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/wfh_monitoring  # Updated to use MongoDB
+    volumes:
+      - ./backend/migrations:/app/migrations  # Bind mount for migrations
+
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000/api/dashboard
+    restart: always
+
+  discord-bot:
+    build:
+      context: ./discord-bot
+    env_file:
+      - ./discord-bot/.env
+    restart: always
+
+  mongodb:
+    image: mongo:6.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: always
+    # healthcheck:
+    #   test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+    #   interval: 10s
+    #   timeout: 5s
+    #   retries: 5
+
+volumes:
+  mongo_data:

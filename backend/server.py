@@ -2,11 +2,26 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from bson.objectid import ObjectId
+from pymongo import UpdateOne  # Add this import
 from apscheduler.schedulers.background import BackgroundScheduler
-from mongodb import users_collection, sessions_collection, activities_collection, daily_summaries_collection
+from mongodb import users_collection, sessions_collection, activities_collection, daily_summaries_collection, app_usage_collection
+from bson import json_util
+import json
 
 app = Flask(__name__)
 CORS(app)
+
+def serialize_mongodb_doc(doc):
+    """Helper function to serialize MongoDB documents"""
+    if isinstance(doc, ObjectId):
+        return str(doc)
+    elif isinstance(doc, datetime):
+        return doc.isoformat()
+    elif isinstance(doc, dict):
+        return {k: serialize_mongodb_doc(v) for k, v in doc.items()}
+    elif isinstance(doc, list):
+        return [serialize_mongodb_doc(item) for item in doc]
+    return doc
 
 @app.route('/api/session', methods=['POST'])
 def session():
@@ -31,20 +46,20 @@ def session():
         user = users_collection.find_one({"username": data['username']})
         if not user:
             print(f"🔍 User not found. Creating new user: {data['username']}")
-            user_id = users_collection.insert_one({
+            result = users_collection.insert_one({
                 "username": data['username'],
-                "email": data.get('email'),
-                "is_active": True,
                 "created_at": datetime.utcnow()
-            }).inserted_id
+            })
+            user_id = result.inserted_id
+            print(f"✅ Created new user with ID: {user_id}")
         else:
-            print(f"✅ User found: {user}")
             user_id = user["_id"]
 
-        # Update or create session
-        session = sessions_collection.find_one({"user_id": user_id})
+        # Get current session
+        session = sessions_collection.find_one({"user_id": user_id}, sort=[("timestamp", -1)])
+
+        # Handle different events
         if event == "joined":
-            # Handle joining the channel
             if session:
                 print(f"🔄 Updating session for user_id: {user_id} on join")
                 sessions_collection.update_one(
@@ -133,105 +148,206 @@ def session():
 
 @app.route('/api/activity', methods=['POST'])
 def activity():
-    data = request.json
-    print(f"Received activity data: {data}")  # Log the incoming data
-
     try:
+        data = request.json
+        print(f"📥 Received activity data: {data}")
+
         # Get the user
         user = users_collection.find_one({"username": data['username']})
         if not user:
             print(f"❌ User not found: {data['username']}")
             return jsonify({'error': 'User not found'}), 404
 
-        # Update or insert activity
-        activities_collection.update_one(
-            {"user_id": user["_id"]},  # Match the user by user_id
+        current_date = data.get('date') or datetime.now().strftime("%Y-%m-%d")
+        app_usage = data.get('app_usage', {})
+
+        # Update activities collection
+        bulk_operations = []
+        for app_name, duration in app_usage.items():
+            bulk_operations.append(UpdateOne(
+                {
+                    "user_id": user["_id"],
+                    "app_name": app_name,
+                    "date": current_date
+                },
+                {
+                    "$inc": {
+                        "total_time": duration  # Use the duration from app_usage directly
+                    },
+                    "$set": {
+                        "last_updated": datetime.now(),
+                        "username": user['username']
+                    }
+                },
+                upsert=True
+            ))
+
+        if bulk_operations:
+            result = activities_collection.bulk_write(bulk_operations)
+            print(f"✅ Updated {len(bulk_operations)} activities")
+
+        # Update daily summary
+        total_time = sum(app_usage.values())
+        daily_summaries_collection.update_one(
             {
+                "user_id": user["_id"],
+                "date": current_date
+            },
+            {
+                "$inc": {"total_active_time": total_time},
                 "$set": {
-                    "active_apps": data.get('active_apps', []),
-                    "active_app": data.get('active_app', 'unknown'),
-                    "idle_time": data.get('idle_time', '0 mins'),
-                    "timestamp": datetime.fromisoformat(data['timestamp'])
+                    "last_updated": datetime.now(),
+                    "username": user['username']
+                },
+                "$push": {
+                    "app_summaries": {
+                        "timestamp": data.get('timestamp'),
+                        "apps": app_usage
+                    }
                 }
             },
-            upsert=True  # Create a new record if it doesn't exist
+            upsert=True
         )
 
-        return jsonify({'ok': True})
+        print(f"✅ Successfully updated activity data")
+        return jsonify({'success': True})
+
     except Exception as e:
-        print(f"❌ Error processing activity: {e}")
+        print(f"❌ Error processing activity: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/dashboard', methods=['GET'])
 def dashboard():
     try:
-        users = users_collection.find()
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        # Get all users first
+        users = list(users_collection.find({}))
         dashboard_data = []
 
         for user in users:
-            user_id = user["_id"]
-            username = user["username"]
-
-            # Fetch the latest session for the user
-            latest_session = sessions_collection.find_one(
-                {"user_id": user_id},
+            # Get latest session data
+            session = sessions_collection.find_one(
+                {"user_id": user["_id"]},
                 sort=[("timestamp", -1)]
-            )
+            ) or {}  # Use empty dict if no session found
 
-            # Fetch the latest activity for the user
-            latest_activity = activities_collection.find_one(
-                {"user_id": user_id},
-                sort=[("timestamp", -1)]
-            )
+            # Get app usage data
+            app_usage = list(activities_collection.find(
+                {
+                    "user_id": user["_id"],
+                    "date": current_date
+                }
+            ))
 
-            # Fetch the daily summary for the user
-            today = datetime.utcnow().date()
-            daily_summary = daily_summaries_collection.find_one(
-                {"user_id": user_id, "date": str(today)}
-            )
-            total_idle_time = daily_summary["total_idle_time"] if daily_summary else 0
+            # Format app usage data
+            formatted_app_usage = [
+                {
+                    "app_name": app["app_name"],
+                    "total_time": app["total_time"],
+                    "last_updated": app.get("last_updated")
+                }
+                for app in app_usage
+            ]
 
-            # Prepare the response data
-            dashboard_data.append({
-                "username": username,
-                "channel": latest_session["channel"] if latest_session else "N/A",
-                "screen_shared": latest_session["screen_shared"] if latest_session else False,
-                "screen_share_time": latest_session["screen_share_time"] if latest_session else 0,
-                "timestamp": latest_session["timestamp"] if latest_session else None,
-                "active_app": latest_activity["active_app"] if latest_activity else "Unknown",
-                "active_apps": latest_activity["active_apps"] if latest_activity else [],
-                "total_idle_time": total_idle_time // 60,  # Convert seconds to minutes
-                "total_working_hours": latest_session.get("total_working_hours", 0) // 3600,  # Convert seconds to hours
-                "daily_summaries": user.get("daily_summaries", [])
-            })
+            # Create user dashboard entry
+            user_data = {
+                "username": user["username"],
+                "channel": session.get("channel", "N/A"),
+                "screen_shared": session.get("screen_shared", False),
+                "timestamp": session.get("timestamp"),
+                "active_app": session.get("active_app", "Unknown"),
+                "active_apps": session.get("active_apps", []),
+                "screen_share_time": session.get("screen_share_time", 0),
+                "total_idle_time": session.get("total_idle_time", 0),
+                "total_working_hours": session.get("total_working_hours", 0),
+                "app_usage": formatted_app_usage
+            }
+            
+            dashboard_data.append(user_data)
 
+        print(f"Dashboard data prepared for {len(dashboard_data)} users")
         return jsonify(dashboard_data)
+
     except Exception as e:
-        print(f"❌ Error fetching dashboard data: {e}")
-        return jsonify({"error": "Failed to fetch dashboard data"}), 500
+        print(f"Error in dashboard: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/session_status', methods=['GET'])
 def session_status():
     try:
         username = request.args.get('username')
         if not username:
-            return jsonify({'error': 'Username is required'}), 400
+            return jsonify({'error': 'Username required'}), 400
 
-        # Find the user
         user = users_collection.find_one({"username": username})
         if not user:
             return jsonify({'error': 'User not found'}), 404
 
-        # Check the user's session
-        session = sessions_collection.find_one({"user_id": user["_id"], "screen_shared": True})
-        if session:
-            return jsonify({'screen_shared': True, 'channel': session.get('channel', 'N/A')})
-        else:
-            return jsonify({'screen_shared': False})
+        # Get latest session
+        session = sessions_collection.find_one(
+            {"user_id": user["_id"]},
+            sort=[("timestamp", -1)]
+        )
+
+        return jsonify({
+            "screen_shared": session.get("screen_shared", False) if session else False,
+            "channel": session.get("channel", None) if session else None,
+            "timestamp": session.get("timestamp", None) if session else None,
+            "active_app": session.get("active_app", None) if session else None,
+            "active_apps": session.get("active_apps", []) if session else []
+        })
 
     except Exception as e:
-        print(f"❌ Error fetching session status: {e}")
-        return jsonify({'error': 'Failed to fetch session status'}), 500
+        print(f"Error in session status: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/verify_data', methods=['GET'])
+def verify_data():
+    """Endpoint to verify data in collections"""
+    try:
+        username = request.args.get('username')
+        if not username:
+            return jsonify({'error': 'Username required'}), 400
+
+        user = users_collection.find_one({"username": username})
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Get today's date
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Get activities
+        activities = list(activities_collection.find({
+            "user_id": user["_id"],
+            "date": today
+        }))
+
+        # Get daily summary
+        daily_summary = daily_summaries_collection.find_one({
+            "user_id": user["_id"],
+            "date": today
+        })
+
+        return jsonify({
+            'activities': [
+                {
+                    'app_name': a['app_name'],
+                    'total_time': a['total_time'],
+                    'last_updated': a['last_updated'].isoformat()
+                } for a in activities
+            ],
+            'daily_summary': {
+                'total_active_time': daily_summary['total_active_time'] if daily_summary else 0,
+                'last_updated': daily_summary['last_updated'].isoformat() if daily_summary else None
+            } if daily_summary else None
+        })
+
+    except Exception as e:
+        print(f"❌ Error verifying data: {e}")
+        return jsonify({'error': str(e)}), 500
 
 def reset_screen_share_time():
     try:

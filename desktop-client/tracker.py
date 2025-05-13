@@ -24,6 +24,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.expanduser('~/.wfh-tracker/logs/tracker.log')
 CACHE_FILE = os.path.expanduser('~/.wfh-tracker/cache/activity_cache.json')
 AGGREGATED_LOG_FILE = os.path.expanduser('~/.wfh-tracker/logs/aggregated_log.json')
+LAST_SYNC_FILE = os.path.expanduser('~/.wfh-tracker/cache/last_sync.json')
 
 # Constants
 API = os.getenv('API_URL', 'https://api-wfh.kryptomind.net/api/activity')
@@ -244,15 +245,33 @@ def send_cached_data():
         return
     with open(CACHE_FILE, 'r') as f:
         cache = json.load(f)
-    for data in cache:
-        try:
-            headers = {'Content-Type': 'application/json'}
-            response = requests.post(API, json=data, headers=headers, timeout=10)
-            log_message(f"✅ Sent cached data: {data}")
-        except Exception as e:
-            log_message(f"❌ Error sending cached data: {e}")
-            return  # Stop on first failure, keep the rest for next time
+    if not cache:
+        return
+    # Only send the last (most recent) cached entry
+    last_data = cache[-1]
+    try:
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(API, json=last_data, headers=headers, timeout=10)
+        log_message(f"✅ Sent latest cached data: {last_data}")
+        log_message(f"📡 Response status: {response.status_code}")
+        log_message(f"📡 Response body: {response.text}")
+    except Exception as e:
+        log_message(f"❌ Error sending cached data: {e}")
+        return  # Keep cache for next time
+    # Clear the cache after sending
     os.remove(CACHE_FILE)
+
+
+def load_last_sync():
+    if os.path.exists(LAST_SYNC_FILE):
+        with open(LAST_SYNC_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_last_sync(last_sync):
+    with open(LAST_SYNC_FILE, 'w') as f:
+        json.dump(last_sync, f)
 
 
 def sync_data():
@@ -273,11 +292,17 @@ def sync_data():
         for app, seconds in app_usage.items()
     }
     
+    # Add per-app last_sync info
+    app_sync_info = {}
+    for app in normalized_app_usage:
+        app_sync_info[app] = formatted_time
+
     data = {
         'username': USER,
         'app_usage': normalized_app_usage,
         'timestamp': formatted_time,
-        'date': current_date
+        'date': current_date,
+        'app_sync_info': app_sync_info
     }
     
     log_message(f"📤 Attempting to sync data to {API}")
@@ -293,6 +318,9 @@ def sync_data():
             if response.status_code == 200:
                 log_message("✅ Data synced successfully")
                 app_usage = {}  # Reset after successful sync
+                last_sync = load_last_sync()
+                last_sync.update(app_sync_info)
+                save_last_sync(last_sync)
             else:
                 log_message(f"❌ Failed to sync data: {response.status_code}")
                 save_to_cache(data)

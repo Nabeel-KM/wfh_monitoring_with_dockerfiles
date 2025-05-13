@@ -9,7 +9,8 @@
       "react-scripts": "5.0.1",
       "@mui/material": "^5.15.13",
       "@emotion/react": "^11.11.1",
-      "@emotion/styled": "^11.11.0"
+      "@emotion/styled": "^11.11.0",
+      "react-router-dom": "^6.22.3"
     },
     "scripts": {
       "start": "react-scripts start",

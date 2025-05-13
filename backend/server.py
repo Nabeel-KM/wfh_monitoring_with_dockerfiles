@@ -1,15 +1,27 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bson.objectid import ObjectId
 from pymongo import UpdateOne  # Add this import
 from apscheduler.schedulers.background import BackgroundScheduler
 from mongodb import users_collection, sessions_collection, activities_collection, daily_summaries_collection, app_usage_collection
 from bson import json_util
 import json
+import boto3
+import os
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize S3 client
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+    aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+    region_name=os.getenv('AWS_REGION', 'us-east-1')
+)
+
+S3_BUCKET = os.getenv('S3_BUCKET', 'km-wfh-monitoring-bucket')
 
 def serialize_mongodb_doc(doc):
     """Helper function to serialize MongoDB documents"""
@@ -160,31 +172,37 @@ def activity():
 
         current_date = data.get('date') or datetime.now().strftime("%Y-%m-%d")
         app_usage = data.get('app_usage', {})
+        app_sync_info = data.get('app_sync_info', {})
+        sync_timestamp = data.get('timestamp')
 
-        # Update activities collection
-        bulk_operations = []
+        # Update activities collection with deduplication
         for app_name, duration in app_usage.items():
-            bulk_operations.append(UpdateOne(
-                {
-                    "user_id": user["_id"],
-                    "app_name": app_name,
-                    "date": current_date
-                },
-                {
-                    "$inc": {
-                        "total_time": duration  # Use the duration from app_usage directly
+            sync_ts = app_sync_info.get(app_name, data.get('timestamp'))
+            activity_doc = activities_collection.find_one({
+                "user_id": user["_id"],
+                "app_name": app_name,
+                "date": current_date
+            })
+            last_sync = activity_doc.get("last_sync", "") if activity_doc else ""
+            if not last_sync or sync_ts > last_sync:
+                activities_collection.update_one(
+                    {
+                        "user_id": user["_id"],
+                        "app_name": app_name,
+                        "date": current_date
                     },
-                    "$set": {
-                        "last_updated": datetime.now(),
-                        "username": user['username']
-                    }
-                },
-                upsert=True
-            ))
-
-        if bulk_operations:
-            result = activities_collection.bulk_write(bulk_operations)
-            print(f"✅ Updated {len(bulk_operations)} activities")
+                    {
+                        "$inc": {"total_time": duration},
+                        "$set": {
+                            "last_updated": datetime.now(),
+                            "username": user['username'],
+                            "last_sync": sync_ts
+                        }
+                    },
+                    upsert=True
+                )
+            else:
+                print(f"⚠️ Duplicate or old sync for {app_name} on {current_date}, ignoring.")
 
         # Update daily summary
         total_time = sum(app_usage.values())
@@ -219,13 +237,9 @@ def activity():
 @app.route('/api/dashboard', methods=['GET'])
 def dashboard():
     try:
-        # Get all users
         users = list(users_collection.find())
-        
-        # Get current date
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        
-        # Process each user
+        # Use UTC for all date calculations
+        current_date = datetime.now(timezone.utc).date()
         dashboard_data = []
         for user in users:
             # Get latest session
@@ -233,58 +247,83 @@ def dashboard():
                 {"user_id": user["_id"]},
                 sort=[("timestamp", -1)]
             )
-            
-            # Get daily summary for today
+
+            # --- Filter sessions for the current day using UTC ---
+            day_start = datetime.combine(current_date, datetime.min.time(), tzinfo=timezone.utc)
+            day_end = datetime.combine(current_date, datetime.max.time(), tzinfo=timezone.utc)
+            sessions_today = list(sessions_collection.find({
+                "user_id": user["_id"],
+                "start_time": {"$gte": day_start, "$lte": day_end},
+                "stop_time": {"$gte": day_start, "$lte": day_end}
+            }))
+            session_durations = [(s["stop_time"] - s["start_time"]).total_seconds() for s in sessions_today if s["stop_time"] > s["start_time"]]
+            total_session_seconds = sum(session_durations)
+            total_session_hours = round(max(total_session_seconds, 0) / 3600, 2)
+
+            # --- Duty start/end time logic ---
+            duty_start_session = sessions_collection.find_one({
+                "user_id": user["_id"],
+                "event": "joined",
+                "start_time": {"$gte": day_start, "$lte": day_end}
+            }, sort=[("start_time", 1)])
+            duty_end_session = sessions_collection.find_one({
+                "user_id": user["_id"],
+                "event": "left",
+                "stop_time": {"$gte": day_start, "$lte": day_end}
+            }, sort=[("stop_time", -1)])
+            duty_start_time = duty_start_session["start_time"].astimezone(timezone.utc).isoformat() if duty_start_session and duty_start_session.get("start_time") else None
+            duty_end_time = duty_end_session["stop_time"].astimezone(timezone.utc).isoformat() if duty_end_session and duty_end_session.get("stop_time") else None
+
+            # --- Aggregate app usage from activities collection for today (accurate, UTC) ---
+            day_str = current_date.strftime("%Y-%m-%d")
+            activities_today = list(activities_collection.find({
+                "user_id": user["_id"],
+                "date": day_str
+            }))
+            app_usage = [
+                {"app_name": a["app_name"], "total_time": max(a.get("total_time", 0), 0)}
+                for a in activities_today
+            ]
+            total_active_time = round(sum(a["total_time"] for a in app_usage), 2)
+            active_apps = [a["app_name"] for a in app_usage if a.get("total_time", 0) > 0]
+            most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0), default=None)
+
+            # Get daily summary for today (for idle time, etc.)
             daily_summary = daily_summaries_collection.find_one({
                 "user_id": user["_id"],
-                "date": current_date
+                "date": day_str
             })
-            
-            # Aggregate app usage from today's app_summaries
-            app_usage = []
-            if daily_summary and "app_summaries" in daily_summary:
-                app_totals = {}
-                for summary in daily_summary["app_summaries"]:
-                    for app, time in summary["apps"].items():
-                        app_totals[app] = app_totals.get(app, 0) + time
-                app_usage = [{"app_name": app, "total_time": total_time} for app, total_time in app_totals.items()]
-            
-            # Get active apps (apps with nonzero usage)
-            active_apps = [app["app_name"] for app in app_usage if app.get("total_time", 0) > 0]
-            
-            # Get most active app
-            most_active_app = None
-            if app_usage:
-                most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0))
-            
+            total_idle_time = daily_summary.get("total_idle_time", 0) if daily_summary else 0
+
             user_data = {
                 "username": user["username"],
                 "channel": latest_session.get("channel") if latest_session else None,
                 "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
-                "timestamp": latest_session.get("timestamp").isoformat() if latest_session and latest_session.get("timestamp") else None,
+                "timestamp": latest_session.get("timestamp").astimezone(timezone.utc).isoformat() if latest_session and latest_session.get("timestamp") else None,
                 "active_app": most_active_app["app_name"] if most_active_app else None,
                 "active_apps": active_apps,
                 "screen_share_time": latest_session.get("screen_share_time", 0) if latest_session else 0,
-                "total_idle_time": daily_summary.get("total_idle_time", 0) if daily_summary else 0,
-                "total_working_hours": daily_summary.get("total_working_hours", 0) if daily_summary else 0,
+                "total_idle_time": total_idle_time,
+                "total_active_time": total_active_time,  # minutes
+                "total_session_time": total_session_hours,  # hours
+                "duty_start_time": duty_start_time,
+                "duty_end_time": duty_end_time,
                 "app_usage": app_usage,
+                "most_used_app": most_active_app["app_name"] if most_active_app else None,
+                "most_used_app_time": round(most_active_app["total_time"], 2) if most_active_app else 0,
                 "daily_summaries": list(daily_summaries_collection.find(
                     {"user_id": user["_id"]},
                     sort=[("date", -1)],
                     limit=7
                 ))
             }
-            
             dashboard_data.append(user_data)
-        
-        # Add cache control headers
         serialized_data = serialize_mongodb_doc(dashboard_data)
         response = jsonify(serialized_data)
         response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
         return response
-        
     except Exception as e:
         print(f"❌ Error in dashboard endpoint: {e}")
         return jsonify({'error': str(e)}), 500
@@ -441,6 +480,109 @@ scheduler = BackgroundScheduler()
 scheduler.add_job(update_screen_share_time, 'interval', minutes=1)  # Run every minute
 scheduler.add_job(reset_screen_share_time, 'cron', hour=0, minute=0)  # Run at midnight UTC
 scheduler.start()
+
+@app.route('/api/history', methods=['GET'])
+def history():
+    try:
+        username = request.args.get('username')
+        days = int(request.args.get('days', 30))
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=days-1)
+        users = []
+        if username:
+            user = users_collection.find_one({"username": username})
+            if not user:
+                return jsonify({'error': 'User not found'}), 404
+            users = [user]
+        else:
+            users = list(users_collection.find())
+        history_data = []
+        for user in users:
+            user_id = user["_id"]
+            user_history = {"username": user["username"], "days": []}
+            for i in range(days):
+                day = start_date + timedelta(days=i)
+                day_str = day.strftime("%Y-%m-%d")
+                # Sessions for the day
+                sessions = list(sessions_collection.find({
+                    "user_id": user_id,
+                    "start_time": {"$exists": True, "$ne": None, "$gte": datetime.combine(day, datetime.min.time())},
+                    "stop_time": {"$exists": True, "$ne": None, "$lte": datetime.combine(day, datetime.max.time())}
+                }))
+                total_session_seconds = sum((s["stop_time"] - s["start_time"]).total_seconds() for s in sessions)
+                total_session_hours = round(total_session_seconds / 3600, 2)
+                first_activity = min((s["start_time"] for s in sessions), default=None)
+                last_activity = max((s["stop_time"] for s in sessions), default=None)
+                # Activities for the day
+                activities = list(activities_collection.find({
+                    "user_id": user_id,
+                    "date": day_str
+                }))
+                app_usage = [
+                    {"app_name": a["app_name"], "total_time": a.get("total_time", 0)}
+                    for a in activities
+                ]
+                most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0), default=None)
+                # Daily summary for the day
+                daily_summary = daily_summaries_collection.find_one({
+                    "user_id": user_id,
+                    "date": day_str
+                })
+                total_active_time = daily_summary.get("total_active_time", 0) if daily_summary else 0
+                total_idle_time = daily_summary.get("total_idle_time", 0) if daily_summary else 0
+                user_history["days"].append({
+                    "date": day_str,
+                    "total_active_time": round(total_active_time / 60, 2),
+                    "total_session_time": total_session_hours,
+                    "total_idle_time": total_idle_time,
+                    "first_activity": first_activity.isoformat() if first_activity else None,
+                    "last_activity": last_activity.isoformat() if last_activity else None,
+                    "app_usage": app_usage,
+                    "most_used_app": most_active_app["app_name"] if most_active_app else None,
+                    "most_used_app_time": round(most_active_app["total_time"], 2) if most_active_app else 0
+                })
+            history_data.append(user_history)
+        serialized_data = serialize_mongodb_doc(history_data)
+        return jsonify(serialized_data)
+    except Exception as e:
+        print(f"❌ Error in history endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/screenshots', methods=['GET'])
+def list_screenshots():
+    try:
+        username = request.args.get('username')
+        date = request.args.get('date')
+        
+        if not username or not date:
+            return jsonify({'error': 'Username and date are required'}), 400
+            
+        # List objects in the S3 folder
+        prefix = f"{username}/{date}/"
+        response = s3_client.list_objects_v2(
+            Bucket=S3_BUCKET,
+            Prefix=prefix
+        )
+        
+        # Extract screenshot URLs
+        screenshots = []
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                if obj['Key'].endswith('.png'):
+                    url = f"https://{S3_BUCKET}.s3.{os.getenv('AWS_REGION', 'us-east-1')}.amazonaws.com/{obj['Key']}"
+                    screenshots.append({
+                        'url': url,
+                        'key': obj['Key'],
+                        'last_modified': obj['LastModified'].isoformat()
+                    })
+        
+        return jsonify({
+            'screenshots': sorted(screenshots, key=lambda x: x['key'])
+        })
+        
+    except Exception as e:
+        print(f"❌ Error listing screenshots: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

@@ -6,14 +6,17 @@ services:
       context: ./backend
     depends_on:
      - mongodb
-        # condition: service_healthy
     ports:
       - "5000:5000"
     restart: always
     environment:
-      - MONGO_URI=mongodb://mongodb:27017/wfh_monitoring  # Updated to use MongoDB
+      - MONGO_URI=mongodb://mongodb:27017/wfh_monitoring
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - S3_BUCKET=${S3_BUCKET:-km-wfh-monitoring-bucket}
     volumes:
-      - ./backend/migrations:/app/migrations  # Bind mount for migrations
+      - ./backend/migrations:/app/migrations
 
   frontend:
     build:

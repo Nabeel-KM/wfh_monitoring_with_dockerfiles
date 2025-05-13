@@ -10,25 +10,32 @@ const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api/dashboar
 function App() {
   const [data, setData] = useState([]);
   const [darkMode, setDarkMode] = useState(false);
+  const [lastFetchTime, setLastFetchTime] = useState(null);
 
-  const fetchData = () => {
-    console.log('Fetching data from:', API);
-    axios.get(`${API}?t=${new Date().getTime()}`, {
-      headers: { 'Cache-Control': 'no-cache' }
-    })
-      .then(res => {
-        console.log("Raw API response:", res.data);
-        const processedData = res.data.map(user => ({
-          ...user,
-          app_usage: Array.isArray(user.app_usage) ? user.app_usage : []
-        }));
-        console.log("Processed data:", processedData);
-        setData(processedData);
-      })
-      .catch(err => {
-        console.error("API fetch error:", err);
-        console.error("Error details:", err.response?.data);
+  const fetchData = async () => {
+    try {
+      console.log('Fetching data from:', API);
+      const timestamp = new Date().getTime();
+      const response = await axios.get(`${API}?t=${timestamp}`, {
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        }
       });
+      
+      console.log("Raw API response:", response.data);
+      const processedData = response.data.map(user => ({
+        ...user,
+        app_usage: Array.isArray(user.app_usage) ? user.app_usage : []
+      }));
+      console.log("Processed data:", processedData);
+      setData(processedData);
+      setLastFetchTime(timestamp);
+    } catch (err) {
+      console.error("API fetch error:", err);
+      console.error("Error details:", err.response?.data);
+    }
   };
 
   useEffect(() => {

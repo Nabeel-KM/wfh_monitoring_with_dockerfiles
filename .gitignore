@@ -1,5 +1,27 @@
 # Ignore node_modules folder
 node_modules/
+desktop-client/build
+desktop-client/dist/*
+desktop-client/dist
+desktop-client/tracker.spec
+desktop-client/venv
+desktop-client/tracker.spec
+desktop-client/venv
+desktop-client/tracker.spec
+desktop-client/venv
+desktop-client/build.sh
+desktop-client/tracker.spec
+desktop-client/venv
+desktop-client/tracker.spec
+desktop-client/venv
+desktop-client/tracker.spec
+desktop-client/venv
+desktop-client/README.md
+desktop-client/test_screenshot.py
+desktop-client/setup.py
+
+/wfh-monitor/
+wfh-monitor-1/
 
 # Ignore log files
 *.log

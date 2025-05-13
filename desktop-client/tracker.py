@@ -6,38 +6,42 @@ import json
 import os
 import sys
 from pynput import mouse, keyboard
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import hashlib
 import logging
 import boto3
 from PIL import ImageGrab
 import io
-from datetime import datetime
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+import logging.handlers
+
+# Load environment variables
+load_dotenv()
 
 # Add after imports
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE = os.path.join(BASE_DIR, 'logs', 'tracker.log')
-CACHE_FILE = os.path.join(BASE_DIR, 'cache', 'activity_cache.json')
-AGGREGATED_LOG_FILE = os.path.join(BASE_DIR, 'logs', 'aggregated_log.json')
+LOG_FILE = os.path.expanduser('~/.wfh-tracker/logs/tracker.log')
+CACHE_FILE = os.path.expanduser('~/.wfh-tracker/cache/activity_cache.json')
+AGGREGATED_LOG_FILE = os.path.expanduser('~/.wfh-tracker/logs/aggregated_log.json')
 
 # Constants
-API = 'http://localhost:5000/api/activity'
-SESSION_STATUS_API = 'http://localhost:5000/api/session_status'
-USER = 'nabeelkm_55353'
-IDLE_THRESHOLD = 300  # 5 minutes
-SYNC_INTERVAL = 120  # 30 minutes
-LOG_INTERVAL = 60  # 1 minute
-STATUS_CHECK_INTERVAL = 30  # 30 seconds
+API = os.getenv('API_URL', 'https://api-wfh.kryptomind.net/api/activity')
+SESSION_STATUS_API = os.getenv('SESSION_STATUS_API', 'https://api-wfh.kryptomind.net/api/session_status')
+USER = os.getenv('USER_ID', 'default_user')
+IDLE_THRESHOLD = int(os.getenv('IDLE_THRESHOLD', '300'))  # 5 minutes
+SYNC_INTERVAL = int(os.getenv('SYNC_INTERVAL', '1800'))  # 30 minutes
+LOG_INTERVAL = int(os.getenv('LOG_INTERVAL', '60'))  # 1 minute
+STATUS_CHECK_INTERVAL = int(os.getenv('STATUS_CHECK_INTERVAL', '30'))  # 30 seconds
 SECONDS_TO_MINUTES = 60
 SECONDS_TO_HOURS = 3600
 
 # S3 Configuration
-S3_BUCKET_NAME = 'km-wfh-monitoring-bucket'
-AWS_ACCESS_KEY = 'AKIAXNGUVRA3FNABXBGECNN'
-AWS_SECRET_KEY = 'ijdopViq3XQ0RKevNAbQJW0c8FI7kR1w2Uo6EGHiYOg'
-AWS_REGION = 'us-east-1'
-SCREENSHOT_INTERVAL = 120  # 30 minutes in seconds
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
+AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY')
+AWS_SECRET_KEY = os.getenv('AWS_SECRET_KEY')
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+SCREENSHOT_INTERVAL = int(os.getenv('SCREENSHOT_INTERVAL', '1800'))  # 30 minutes in seconds
 
 # Global variables
 last_input = time.time()
@@ -45,8 +49,10 @@ last_sync_time = time.time()
 last_log_time = time.time()
 last_status_check_time = time.time()
 app_usage = {}
-tracking_enabled = True  # Set to True by default for testing
+tracking_enabled = False
 last_screenshot_time = time.time()
+has_joined_today = False
+last_join_date = None
 
 
 def ensure_directories():
@@ -76,33 +82,40 @@ def setup_logging():
         # Remove any existing handlers
         for handler in logging.root.handlers[:]:
             logging.root.removeHandler(handler)
-        
+
         # Create logs directory if it doesn't exist
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        
-        # Configure file logging
-        file_handler = logging.FileHandler(LOG_FILE)
-        file_handler.setLevel(logging.INFO)
-        file_formatter = logging.Formatter(
-            '[%(asctime)s] %(levelname)s: %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(file_formatter)
-        
+
+        # Use TimedRotatingFileHandler: rotate every day, keep 7 days
+        try:
+            file_handler = logging.handlers.TimedRotatingFileHandler(
+                LOG_FILE, when='midnight', backupCount=7, encoding='utf-8'
+            )
+            file_handler.setLevel(logging.INFO)
+            file_formatter = logging.Formatter(
+                '[%(asctime)s] %(levelname)s: %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            file_handler.setFormatter(file_formatter)
+        except Exception as fe:
+            print(f"❌ Error creating file handler: {fe}")
+            file_handler = None
+
         # Configure console logging
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
         console_formatter = logging.Formatter('%(levelname)s: %(message)s')
         console_handler.setFormatter(console_formatter)
-        
+
         # Setup root logger
         logging.root.setLevel(logging.INFO)
-        logging.root.addHandler(file_handler)
+        if file_handler:
+            logging.root.addHandler(file_handler)
         logging.root.addHandler(console_handler)
-        
+
         # Test logging
         logging.info("✅ Logging system initialized")
-        
+
     except Exception as e:
         print(f"❌ Error setting up logging: {e}")
         sys.exit(1)
@@ -224,17 +237,21 @@ def save_to_cache(data):
 
 
 def send_cached_data():
+    if not tracking_enabled or not has_joined_today:
+        log_message("🔒 Not sending cached data (user not in wfh-monitoring channel or never joined today)")
+        return
     if not os.path.exists(CACHE_FILE):
         return
     with open(CACHE_FILE, 'r') as f:
         cache = json.load(f)
     for data in cache:
         try:
-            requests.post(API, json=data)
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post(API, json=data, headers=headers, timeout=10)
             log_message(f"✅ Sent cached data: {data}")
         except Exception as e:
             log_message(f"❌ Error sending cached data: {e}")
-            return
+            return  # Stop on first failure, keep the rest for next time
     os.remove(CACHE_FILE)
 
 
@@ -266,21 +283,28 @@ def sync_data():
     log_message(f"📤 Attempting to sync data to {API}")
     log_message(f"📦 Payload: {json.dumps(data, indent=2)}")
     
-    try:
-        headers = {'Content-Type': 'application/json'}
-        response = requests.post(API, json=data, headers=headers, timeout=10)
-        log_message(f"📡 Response status: {response.status_code}")
-        log_message(f"📡 Response body: {response.text}")
-        
-        if response.status_code == 200:
-            log_message("✅ Data synced successfully")
-            app_usage = {}  # Reset after successful sync
-        else:
-            log_message(f"❌ Failed to sync data: {response.status_code}")
+    if tracking_enabled:
+        try:
+            headers = {'Content-Type': 'application/json'}
+            response = requests.post(API, json=data, headers=headers, timeout=10)
+            log_message(f"📡 Response status: {response.status_code}")
+            log_message(f"📡 Response body: {response.text}")
+            
+            if response.status_code == 200:
+                log_message("✅ Data synced successfully")
+                app_usage = {}  # Reset after successful sync
+            else:
+                log_message(f"❌ Failed to sync data: {response.status_code}")
+                save_to_cache(data)
+        except requests.exceptions.RequestException as e:
+            log_message(f"❌ Error syncing data: {str(e)}")
             save_to_cache(data)
-    except requests.exceptions.RequestException as e:
-        log_message(f"❌ Error syncing data: {str(e)}")
-        save_to_cache(data)
+    else:
+        log_message("🔒 Not sending data to backend (user not in wfh-monitoring channel)")
+        if has_joined_today:
+            save_to_cache(data)
+        else:
+            log_message("🗒️ Not caching data: user has not joined the channel today")
 
 
 def log_aggregated_data():
@@ -300,7 +324,7 @@ def log_aggregated_data():
 
 def check_session_status():
     """Check the user's session status using the backend API."""
-    global tracking_enabled
+    global tracking_enabled, has_joined_today, last_join_date
     try:
         log_message(f"🔍 Checking session status for user: {USER}")
         response = requests.get(f"{SESSION_STATUS_API}?username={USER}", timeout=5)
@@ -311,20 +335,18 @@ def check_session_status():
             log_message(f"📊 Session data: {json.dumps(session_status)}")
             
             # Check for channel joined status
-            is_in_channel = session_status.get('channel') == 'wfh-monitoring'  # Changed this line
-            
-            if is_in_channel and not tracking_enabled:
-                log_message(f"✅ User joined the channel. Starting tracking.")
-                tracking_enabled = True
-                # Initialize tracking time
-                global last_sync_time, last_log_time, last_screenshot_time  # Added last_screenshot_time
-                last_sync_time = time.time()
-                last_log_time = time.time()
-                last_screenshot_time = time.time()  # Reset screenshot timer when tracking starts
-                
-            elif not is_in_channel and tracking_enabled:
+            is_in_channel = session_status.get('channel') == 'wfh-monitoring'
+            today = date.today().isoformat()
+            if is_in_channel:
+                if not has_joined_today or last_join_date != today:
+                    has_joined_today = True
+                    last_join_date = today
+                if not tracking_enabled:
+                    log_message(f"✅ User joined the channel. Starting tracking.")
+                    tracking_enabled = True
+                    send_cached_data()
+            elif tracking_enabled:
                 log_message(f"⏹️ User left the channel. Stopping tracking.")
-                # Final sync before stopping
                 sync_data()
                 tracking_enabled = False
                 
@@ -338,29 +360,20 @@ def check_session_status():
 
 
 def initialize_s3_client():
-    """Initialize and return S3 client"""
+    """Initialize and return an S3 client if credentials are available"""
+    if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, S3_BUCKET_NAME]):
+        log_message("⚠️ S3 credentials not configured. Screenshot uploads will be disabled.")
+        return None
+        
     try:
-        log_message("🔄 Initializing S3 client...")
         s3_client = boto3.client(
             's3',
             aws_access_key_id=AWS_ACCESS_KEY,
             aws_secret_access_key=AWS_SECRET_KEY,
             region_name=AWS_REGION
         )
-        try:
-            # Test S3 connection by checking bucket
-            s3_client.head_bucket(Bucket=S3_BUCKET_NAME)
-            log_message("✅ S3 client initialized successfully")
-            return s3_client
-        except ClientError as e:
-            error_code = e.response.get('Error', {}).get('Code', 'Unknown')
-            if error_code == '403':
-                log_message("❌ Access denied to S3 bucket. Please check permissions")
-            elif error_code == '404':
-                log_message("❌ S3 bucket not found. Please check bucket name")
-            else:
-                log_message(f"❌ S3 bucket error: {error_code}")
-            return None
+        log_message("✅ S3 client initialized successfully")
+        return s3_client
     except Exception as e:
         log_message(f"❌ Error initializing S3 client: {str(e)}")
         return None
@@ -448,7 +461,7 @@ def take_and_upload_screenshot(s3_client):
 
 def main_loop():
     """Main tracking loop"""
-    global last_input, last_sync_time, last_log_time, last_status_check_time, app_usage, last_screenshot_time
+    global last_input, last_sync_time, last_log_time, last_status_check_time, app_usage, last_screenshot_time, has_joined_today, last_join_date
     
     log_message("✅ Starting tracker...")
     setup_input_listeners()
@@ -470,6 +483,10 @@ def main_loop():
         log_message("✅ Screenshot functionality enabled")
     
     last_screenshot_time = time.time()
+    
+    # Initialize timers here
+    last_activity_check_time = time.time()
+    last_session_status_check_time = time.time()
     
     while True:
         try:
@@ -498,13 +515,13 @@ def main_loop():
                     last_screenshot_time = now
 
             # Track activity every second
-            if now - last_status_check_time >= 1:
+            if now - last_activity_check_time >= 1:
                 active_app = get_active_app_name()
                 idle = now - last_input
 
                 if idle < IDLE_THRESHOLD and active_app:
                     aggregate_app_usage(active_app, 1)
-                last_status_check_time = now
+                last_activity_check_time = now
 
             # Log activity summary every minute
             if now - last_log_time >= LOG_INTERVAL:
@@ -524,9 +541,9 @@ def main_loop():
                 last_log_time = now
 
             # Check session status every 30 seconds
-            if now - last_status_check_time >= STATUS_CHECK_INTERVAL:
+            if now - last_session_status_check_time >= STATUS_CHECK_INTERVAL:
                 check_session_status()
-                last_status_check_time = now
+                last_session_status_check_time = now
 
             # Sync data every 2 minutes if we have data
             if now - last_sync_time >= SYNC_INTERVAL:
@@ -534,6 +551,11 @@ def main_loop():
                     log_message(f"🔄 Syncing data (Interval: {SYNC_INTERVAL}s)")
                     sync_data()
                 last_sync_time = now
+
+            today = date.today().isoformat()
+            if last_join_date != today:
+                has_joined_today = False
+                last_join_date = today
 
             time.sleep(0.1)  # Reduce CPU usage but maintain accuracy
             

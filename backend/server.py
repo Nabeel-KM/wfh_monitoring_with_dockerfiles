@@ -219,61 +219,75 @@ def activity():
 @app.route('/api/dashboard', methods=['GET'])
 def dashboard():
     try:
+        # Get all users
+        users = list(users_collection.find())
+        
+        # Get current date
         current_date = datetime.now().strftime("%Y-%m-%d")
         
-        # Get all users first
-        users = list(users_collection.find({}))
+        # Process each user
         dashboard_data = []
-
         for user in users:
-            # Get latest session data
-            session = sessions_collection.find_one(
+            # Get latest session
+            latest_session = sessions_collection.find_one(
                 {"user_id": user["_id"]},
                 sort=[("timestamp", -1)]
-            ) or {}  # Use empty dict if no session found
-
-            # Get app usage data
-            app_usage = list(activities_collection.find(
-                {
-                    "user_id": user["_id"],
-                    "date": current_date
-                }
-            ))
-
-            # Format app usage data
-            formatted_app_usage = [
-                {
-                    "app_name": app["app_name"],
-                    "total_time": app["total_time"],
-                    "last_updated": app.get("last_updated")
-                }
-                for app in app_usage
-            ]
-
-            # Create user dashboard entry
+            )
+            
+            # Get daily summary for today
+            daily_summary = daily_summaries_collection.find_one({
+                "user_id": user["_id"],
+                "date": current_date
+            })
+            
+            # Aggregate app usage from today's app_summaries
+            app_usage = []
+            if daily_summary and "app_summaries" in daily_summary:
+                app_totals = {}
+                for summary in daily_summary["app_summaries"]:
+                    for app, time in summary["apps"].items():
+                        app_totals[app] = app_totals.get(app, 0) + time
+                app_usage = [{"app_name": app, "total_time": total_time} for app, total_time in app_totals.items()]
+            
+            # Get active apps (apps with nonzero usage)
+            active_apps = [app["app_name"] for app in app_usage if app.get("total_time", 0) > 0]
+            
+            # Get most active app
+            most_active_app = None
+            if app_usage:
+                most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0))
+            
             user_data = {
                 "username": user["username"],
-                "channel": session.get("channel", "N/A"),
-                "screen_shared": session.get("screen_shared", False),
-                "timestamp": session.get("timestamp"),
-                "active_app": session.get("active_app", "Unknown"),
-                "active_apps": session.get("active_apps", []),
-                "screen_share_time": session.get("screen_share_time", 0),
-                "total_idle_time": session.get("total_idle_time", 0),
-                "total_working_hours": session.get("total_working_hours", 0),
-                "app_usage": formatted_app_usage
+                "channel": latest_session.get("channel") if latest_session else None,
+                "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
+                "timestamp": latest_session.get("timestamp").isoformat() if latest_session and latest_session.get("timestamp") else None,
+                "active_app": most_active_app["app_name"] if most_active_app else None,
+                "active_apps": active_apps,
+                "screen_share_time": latest_session.get("screen_share_time", 0) if latest_session else 0,
+                "total_idle_time": daily_summary.get("total_idle_time", 0) if daily_summary else 0,
+                "total_working_hours": daily_summary.get("total_working_hours", 0) if daily_summary else 0,
+                "app_usage": app_usage,
+                "daily_summaries": list(daily_summaries_collection.find(
+                    {"user_id": user["_id"]},
+                    sort=[("date", -1)],
+                    limit=7
+                ))
             }
             
             dashboard_data.append(user_data)
-
-        print(f"Dashboard data prepared for {len(dashboard_data)} users")
-        return jsonify(dashboard_data)
-
+        
+        # Add cache control headers
+        serialized_data = serialize_mongodb_doc(dashboard_data)
+        response = jsonify(serialized_data)
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+        
     except Exception as e:
-        print(f"Error in dashboard: {str(e)}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
+        print(f"❌ Error in dashboard endpoint: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/session_status', methods=['GET'])
 def session_status():

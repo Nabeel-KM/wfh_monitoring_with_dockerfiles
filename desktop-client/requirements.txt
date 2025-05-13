@@ -1,5 +1,0 @@
-psutil==5.9.8
-requests==2.31.0
-pynput==1.7.6
-boto3==1.26.0
-Pillow==9.0.1

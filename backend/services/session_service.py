@@ -1,10 +1,11 @@
 """
-Session service for handling session-related operations.
+Service for managing user sessions
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from bson import ObjectId
 from mongodb import sessions_collection, daily_summaries_collection
+from utils.helpers import ensure_timezone_aware, logger
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,94 @@ class SessionService:
         )
         
         logger.info(f"✅ Updated streaming time for user {user_id}: {duration} seconds")
+    
+    def calculate_session_time(self, first_join, last_leave):
+        """Calculate total session time in hours"""
+        if not (first_join and last_leave and 
+                first_join.get("start_time") and 
+                last_leave.get("stop_time")):
+            return 0
+        
+        try:
+            first_join_time = ensure_timezone_aware(first_join["start_time"])
+            last_leave_time = ensure_timezone_aware(last_leave["stop_time"])
+            
+            if last_leave_time > first_join_time:
+                total_seconds = (last_leave_time - first_join_time).total_seconds()
+                hours = round(total_seconds / 3600, 2)
+                logger.info(f"Session time calculated: {hours} hours")
+                return hours
+            else:
+                logger.warning(f"Invalid session times: {first_join_time} -> {last_leave_time}")
+                return 0
+        except Exception as e:
+            logger.error(f"Error calculating session time: {e}", exc_info=True)
+            return 0
+
+    def get_session_data(self, user_id, date):
+        """Get session data for user on date"""
+        try:
+            day_start = datetime.combine(date, datetime.min.time(), tzinfo=timezone.utc)
+            day_end = datetime.combine(date, datetime.max.time(), tzinfo=timezone.utc)
+            
+            first_join = sessions_collection.find_one(
+                {
+                    "user_id": user_id,
+                    "event": "joined",
+                    "start_time": {"$gte": day_start, "$lte": day_end}
+                }, 
+                sort=[("start_time", 1)]
+            )
+            
+            last_leave = sessions_collection.find_one(
+                {
+                    "user_id": user_id,
+                    "event": "left", 
+                    "stop_time": {"$gte": day_start, "$lte": day_end}
+                },
+                sort=[("stop_time", -1)]
+            )
+            
+            logger.info(f"Found session data for {user_id} on {date}")
+            return first_join, last_leave
+
+        except Exception as e:
+            logger.error(f"Error getting session data: {e}", exc_info=True)
+            return None, None
+
+    def manage_user_session(self, user_id, action):
+        """Start or stop a user session"""
+        current_time = datetime.now(timezone.utc)
+        
+        if action == 'start':
+            session_data = {
+                "user_id": user_id,
+                "channel": "wfh-monitoring",
+                "start_time": current_time,
+                "stop_time": None,
+                "event": "joined",
+                "timestamp": current_time
+            }
+            result = sessions_collection.insert_one(session_data)
+            logger.info(f"✅ Started new session for user {user_id}")
+            return result.inserted_id
+            
+        else:  # stop
+            result = sessions_collection.update_one(
+                {
+                    "user_id": user_id,
+                    "stop_time": None
+                },
+                {
+                    "$set": {
+                        "stop_time": current_time,
+                        "event": "left",
+                        "timestamp": current_time
+                    }
+                }
+            )
+            logger.info(f"✅ Stopped session for user {user_id}")
+            return result.modified_count
 
 # Create a singleton instance
 session_service = SessionService()

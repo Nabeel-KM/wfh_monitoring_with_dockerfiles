@@ -80,9 +80,8 @@ def monitor_db_connection_pool():
         logger.error(f"❌ Error monitoring connection pool: {e}")
 
 # Schedule connection pool monitoring
-# (scheduler will be initialized later, only define the job function here)
-# scheduler = BackgroundScheduler()
-# scheduler.add_job(monitor_db_connection_pool, 'interval', minutes=5)  # Check every 5 minutes
+scheduler = BackgroundScheduler()
+scheduler.add_job(monitor_db_connection_pool, 'interval', minutes=5)  # Check every 5 minutes
 
 # Initialize S3 client
 s3_client = boto3.client(

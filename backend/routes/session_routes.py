@@ -1,18 +1,48 @@
 """
-Session routes for handling session-related API endpoints.
+Routes for managing user sessions
 """
 import logging
+from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from services.user_service import user_service
 from services.session_service import session_service
 from utils.helpers import monitor_performance, gzip_response
+from mongodb import sessions_collection
 
 logger = logging.getLogger(__name__)
 
 # Create Blueprint
-session_bp = Blueprint('session', __name__)
+sessions_bp = Blueprint('sessions', __name__)
 
-@session_bp.route('/api/session', methods=['POST'])
+@sessions_bp.route('/api/sessions/manage', methods=['POST'])
+@monitor_performance
+def manage_session():
+    """Manage user sessions (manual start/stop)"""
+    try:
+        data = request.json
+        username = data.get('username')
+        action = data.get('action')
+        
+        if not username or not action:
+            return jsonify({'error': 'Username and action are required'}), 400
+            
+        if action not in ['start', 'stop']:
+            return jsonify({'error': 'Invalid action. Use start or stop'}), 400
+
+        user = user_service.get_user_by_username(username)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        result = session_service.manage_user_session(user["_id"], action)
+        
+        logger.info(f"✅ Session {action} successful for {username}")
+        return jsonify({'success': True, 'message': f'Session {action}ed'})
+
+    except Exception as e:
+        logger.error(f"❌ Error managing session: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@sessions_bp.route('/api/session', methods=['POST'])
 @monitor_performance
 def handle_session():
     """Handle session events (join, leave, start/stop streaming)"""
@@ -33,7 +63,7 @@ def handle_session():
         logger.error(f"❌ Error processing session: {e}")
         return jsonify({'error': str(e)}), 500
 
-@session_bp.route('/api/sessions/<username>', methods=['GET'])
+@sessions_bp.route('/api/sessions/<username>', methods=['GET'])
 @monitor_performance
 @gzip_response
 def get_user_sessions(username):

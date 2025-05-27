@@ -1,7 +1,8 @@
 """
-User routes for handling user-related API endpoints.
+Routes for user management and settings
 """
 import logging
+from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from services.user_service import user_service
 from utils.helpers import monitor_performance, gzip_response, serialize_mongodb_doc
@@ -9,9 +10,9 @@ from utils.helpers import monitor_performance, gzip_response, serialize_mongodb_
 logger = logging.getLogger(__name__)
 
 # Create Blueprint
-user_bp = Blueprint('user', __name__)
+users_bp = Blueprint('users', __name__)
 
-@user_bp.route('/api/users', methods=['GET'])
+@users_bp.route('/api/users', methods=['GET'])
 @monitor_performance
 @gzip_response
 def get_users():
@@ -25,7 +26,7 @@ def get_users():
         logger.error(f"❌ Error getting users: {e}")
         return jsonify({'error': str(e)}), 500
 
-@user_bp.route('/api/users/active', methods=['GET'])
+@users_bp.route('/api/users/active', methods=['GET'])
 @monitor_performance
 @gzip_response
 def get_active_users():
@@ -39,7 +40,7 @@ def get_active_users():
         logger.error(f"❌ Error getting active users: {e}")
         return jsonify({'error': str(e)}), 500
 
-@user_bp.route('/api/users/<username>', methods=['GET'])
+@users_bp.route('/api/users/<username>', methods=['GET'])
 @monitor_performance
 @gzip_response
 def get_user(username):
@@ -57,7 +58,7 @@ def get_user(username):
         logger.error(f"❌ Error getting user: {e}")
         return jsonify({'error': str(e)}), 500
 
-@user_bp.route('/api/users/<username>/status', methods=['GET'])
+@users_bp.route('/api/users/<username>/status', methods=['GET'])
 @monitor_performance
 def get_user_status(username):
     """Get user's current status"""
@@ -77,7 +78,7 @@ def get_user_status(username):
         logger.error(f"❌ Error getting user status: {e}")
         return jsonify({'error': str(e)}), 500
 
-@user_bp.route('/api/session_status', methods=['GET'])
+@users_bp.route('/api/session_status', methods=['GET'])
 @monitor_performance
 def session_status():
     """Get session status for a user"""
@@ -106,3 +107,30 @@ def session_status():
     except Exception as e:
         logger.error(f"Error in session status: {str(e)}")
         return jsonify({"error": str(e), "status": "error"}), 500
+
+@users_bp.route('/api/users/settings', methods=['GET', 'POST'])
+@monitor_performance
+def user_settings():
+    """Get or update user settings"""
+    try:
+        username = request.args.get('username') or request.json.get('username')
+        if not username:
+            return jsonify({'error': 'Username is required'}), 400
+
+        user = user_service.get_user_by_username(username)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        if request.method == 'GET':
+            settings = user_service.get_user_settings(user["_id"])
+            logger.info(f"✅ Retrieved settings for user {username}")
+            return jsonify(settings)
+        else:
+            data = request.json
+            updated = user_service.update_user_settings(user["_id"], data)
+            logger.info(f"✅ Updated settings for user {username}")
+            return jsonify({'success': True, 'message': 'Settings updated'})
+
+    except Exception as e:
+        logger.error(f"❌ Error managing user settings: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500

@@ -8,6 +8,8 @@ from flask import Blueprint, request, jsonify
 from services.user_service import user_service
 from services.activity_service import activity_service
 from utils.helpers import monitor_performance, gzip_response
+from mongodb import daily_summaries_collection
+from bson import ObjectId
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +17,7 @@ logger = logging.getLogger(__name__)
 missing_bp = Blueprint('missing', __name__)
 
 @missing_bp.route('/api/activity/update_total_time', methods=['POST'])
-@monitor_performance
+@monitor_performance 
 def update_total_active_time():
     """Endpoint to directly update the total_active_time field for a user"""
     try:
@@ -23,23 +25,24 @@ def update_total_active_time():
         username = data.get('username')
         date = data.get('date')
         total_active_time = data.get('total_active_time')
+
+        logger.info(f"Updating total_active_time for {username} on {date}: {total_active_time}")
         
-        if not username or not date or total_active_time is None:
-            return jsonify({'error': 'Username, date, and total_active_time are required'}), 400
-            
-        # Get the user
         user = user_service.get_user_by_username(username)
         if not user:
             return jsonify({'error': 'User not found'}), 404
-            
-        # Update the total_active_time
-        result = activity_service.update_total_active_time(user['_id'], date, total_active_time)
-        
-        logger.info(f"✅ Incrementing total_active_time for {username} on {date} by {total_active_time}")
+
+        result = activity_service.update_total_active_time(
+            user['_id'], 
+            date,
+            total_active_time
+        )
+
+        logger.info(f"✅ Updated total_active_time for {username}")
         return jsonify({'success': True, 'updated': result})
-        
+
     except Exception as e:
-        logger.error(f"❌ Error updating total_active_time: {e}")
+        logger.error(f"❌ Error updating total_active_time: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @missing_bp.route('/api/metrics', methods=['GET'])

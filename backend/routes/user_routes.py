@@ -76,3 +76,33 @@ def get_user_status(username):
     except Exception as e:
         logger.error(f"❌ Error getting user status: {e}")
         return jsonify({'error': str(e)}), 500
+
+@user_bp.route('/api/session_status', methods=['GET'])
+@monitor_performance
+def session_status():
+    """Get session status for a user"""
+    try:
+        username = request.args.get('username')
+        if not username:
+            return jsonify({'error': 'Username required'}), 400
+
+        user = user_service.get_user_by_username(username)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Get latest session
+        latest_session = user_service.get_latest_session(user["_id"])
+
+        # Ensure we return a valid response even if session is None
+        return jsonify({
+            "username": user["username"],
+            "display_name": user.get("display_name", user["username"]),
+            "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
+            "channel": latest_session.get("channel", None) if latest_session else None,
+            "timestamp": latest_session.get("timestamp", None) if latest_session else None,
+            "active_app": latest_session.get("active_app", None) if latest_session else None,
+            "active_apps": latest_session.get("active_apps", []) if latest_session else []
+        })
+    except Exception as e:
+        logger.error(f"Error in session status: {str(e)}")
+        return jsonify({"error": str(e), "status": "error"}), 500

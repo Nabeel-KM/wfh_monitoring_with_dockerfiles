@@ -2,6 +2,7 @@
 Main application entry point.
 """
 import logging
+import time
 from config import create_app, scheduler
 from mongodb import mongo_connection
 from routes.user_routes import user_bp
@@ -10,12 +11,19 @@ from routes.activity_routes import activity_bp
 from routes.screenshot_routes import screenshot_bp
 from routes.dashboard_routes import dashboard_bp
 from routes.history_routes import history_bp
+from routes.stats_routes import stats_bp
+from routes.health_routes import health_bp
+from routes.missing_routes import missing_bp
+from flask import jsonify
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Create Flask app
 app, limiter = create_app()
+
+# Store app start time for uptime calculation
+app.start_time = time.time()
 
 # Register blueprints
 app.register_blueprint(user_bp)
@@ -24,6 +32,9 @@ app.register_blueprint(activity_bp)
 app.register_blueprint(screenshot_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(history_bp)
+app.register_blueprint(stats_bp)
+app.register_blueprint(health_bp)
+app.register_blueprint(missing_bp)
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])
@@ -50,6 +61,25 @@ def server_error(error):
     """Handle 500 errors"""
     logger.error(f"❌ Server error: {error}")
     return {'error': 'Internal server error'}, 500
+
+# CORS headers
+@app.after_request
+def add_cors_headers(response):
+    """Add CORS headers to all responses"""
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Cache-Control'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return response
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options(path):
+    """Handle preflight OPTIONS requests"""
+    response = jsonify({'status': 'ok'})
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Cache-Control'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
+    return response
 
 if __name__ == '__main__':
     # Ensure MongoDB connection is established

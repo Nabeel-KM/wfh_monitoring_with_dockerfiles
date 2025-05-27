@@ -6,26 +6,27 @@ services:
       context: ./backend
     depends_on:
      - mongodb
+        # condition: service_healthy
     ports:
       - "5000:5000"
     restart: always
     environment:
-      - MONGO_URI=mongodb://mongodb:27017/wfh_monitoring
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - MONGO_URI=mongodb://mongodb:27017/wfh_monitoring  # Updated to use MongoDB
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-AKIAXNGUVRA3FXBGECNN}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-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}
       - AWS_REGION=${AWS_REGION:-us-east-1}
       - S3_BUCKET=${S3_BUCKET:-km-wfh-monitoring-bucket}
-    volumes:
-      - ./backend/migrations:/app/migrations
+#    volumes:
+#      - ./backend/migrations:/app/migrations  # Bind mount for migrations
 
-  frontend:
-    build:
-      context: ./frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - REACT_APP_API_URL=http://localhost:5000/api/dashboard
-    restart: always
+#  frontend:
+#    build:
+#      context: ./frontend
+#    ports:
+#      - "3000:3000"
+#    environment:
+#      - REACT_APP_API_URL=https://api-wfh.kryptomind.net/api/dashboard
+#    restart: always
 
   discord-bot:
     build:

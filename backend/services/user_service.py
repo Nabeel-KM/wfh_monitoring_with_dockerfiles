@@ -78,16 +78,23 @@ class UserService:
             {"$set": {"last_active": datetime.utcnow()}}
         )
     
+    def get_latest_session(self, user_id):
+        """Get the latest session for a user"""
+        if isinstance(user_id, str):
+            user_id = ObjectId(user_id)
+            
+        return sessions_collection.find_one(
+            {"user_id": user_id},
+            sort=[("timestamp", -1)]
+        )
+    
     def get_user_session_status(self, user_id):
         """Get user's current session status"""
         if isinstance(user_id, str):
             user_id = ObjectId(user_id)
             
         # Get the most recent session for this user
-        latest_session = sessions_collection.find_one(
-            {"user_id": user_id},
-            sort=[("timestamp", -1)]
-        )
+        latest_session = self.get_latest_session(user_id)
         
         if not latest_session:
             return "offline"

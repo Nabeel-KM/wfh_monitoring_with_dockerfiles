@@ -4,6 +4,7 @@ import os
 import time
 import logging
 from typing import Optional
+import pymongo  # Added for error handling
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -43,7 +44,8 @@ class MongoDBConnection:
                 break
             except (ConnectionFailure, ServerSelectionTimeoutError) as e:
                 if attempt == max_retries - 1:
-                    logger.error(f"Failed to connect to MongoDB after {max_retries} attempts: {e}")
+                    # Use %s for string formatting to prevent log injection
+                    logger.error("Failed to connect to MongoDB after %s attempts: %s", max_retries, str(e))
                     raise
                 logger.warning(f"Connection attempt {attempt + 1} failed, retrying in {retry_delay} seconds...")
                 time.sleep(retry_delay)
@@ -75,6 +77,7 @@ def create_indexes():
     try:
         # Users collection indexes
         users_collection.create_index("username", unique=True)
+        users_collection.create_index("display_name")  # Add index for display_name
         
         # Sessions collection indexes
         sessions_collection.create_index([("user_id", 1), ("timestamp", -1)])

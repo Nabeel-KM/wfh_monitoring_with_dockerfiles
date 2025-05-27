@@ -22,12 +22,14 @@ client.once('ready', () => {
 });
 
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  const user = newState.member?.user?.username || oldState.member?.user?.username;
+  // Get the user's display name instead of username
+  const username = newState.member?.user?.username || oldState.member?.user?.username;
+  const displayName = newState.member?.displayName || oldState.member?.displayName || username;
   const newChannel = newState.channel?.name;
   const oldChannel = oldState.channel?.name;
   const channel = newChannel || oldChannel;
 
-  if (!user || channel?.toLowerCase() !== process.env.CHANNEL_NAME.toLowerCase().trim()) return;
+  if (!username || channel?.toLowerCase() !== process.env.CHANNEL_NAME.toLowerCase().trim()) return;
 
   const isStreaming = newState.streaming || false;
   const eventType = (() => {
@@ -47,12 +49,13 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
   })();
 
   if (!eventType) {
-    console.log(`ℹ️ No relevant event for ${user} in channel ${channel}`);
+    console.log(`ℹ️ No relevant event for ${displayName} in channel ${channel}`);
     return;
   }
 
   const payload = {
-    username: user,
+    username: username, // Original username for database
+    display_name: displayName, // Display name for frontend
     channel: channel || 'Unknown',
     screen_shared: isStreaming,
     event: eventType,
@@ -61,9 +64,9 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
 
   try {
     const response = await axios.post(process.env.API_ENDPOINT, payload);
-    console.log(`📤 Sent data for ${user}: ${response.status}`);
+    console.log(`📤 Sent data for ${displayName}: ${response.status}`);
   } catch (error) {
-    console.error(`❌ Error sending data for ${user}:`, {
+    console.error(`❌ Error sending data for ${displayName}:`, {
       message: error.message,
       payload,
       response: error.response?.data || 'No response'

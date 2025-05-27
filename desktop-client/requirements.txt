@@ -1,13 +1,18 @@
 psutil==5.9.8
 requests==2.31.0
 pynput==1.8.1
-boto3==1.26.0
+boto3==1.34.0
 Pillow
 python-dotenv==1.0.1
-# pyinstaller
-# botocore
-# urllib3==1.26.18
-# six==1.16.0
-# python-xlib==0.33
-# evdev==1.6.1
-# xlib==0.21
+pyinstaller
+pywin32==306; platform_system=="Windows"
+setproctitle
+botocore
+urllib3
+certifi
+charset-normalizer
+idna
+jmespath
+python-dateutil
+s3transfer
+six

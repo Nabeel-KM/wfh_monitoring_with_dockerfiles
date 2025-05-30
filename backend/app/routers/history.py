@@ -66,7 +66,7 @@ async def get_session_data(user_id: ObjectId, day_str: str, sessions_data: List[
 async def get_daily_data(user_id: ObjectId, day_str: str, session_data: Optional[dict]) -> DailyData:
     """Get daily activity data for a user"""
     try:
-        db = get_database()
+        db = await get_database()
         
         # Get session times
         first_join_time = None
@@ -148,7 +148,7 @@ async def get_history(
 ):
     """Get user history data"""
     try:
-        db = get_database()
+        db = await get_database()
         
         # Get users
         if username:

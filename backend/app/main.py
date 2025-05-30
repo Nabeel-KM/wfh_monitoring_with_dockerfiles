@@ -10,7 +10,9 @@ from .routers import (
     dashboard,
     screenshots,
     metrics,
-    history
+    history,
+    auth,
+    users
 )
 import logging
 import time
@@ -98,6 +100,8 @@ app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
 app.include_router(screenshots.router, prefix="/api", tags=["Screenshots"])
 app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
 app.include_router(history.router, prefix="/api", tags=["History"])
+app.include_router(auth.router, prefix="/api", tags=["Authentication"])
+app.include_router(users.router, prefix="/api", tags=["Users"])
 
 @app.on_event("startup")
 async def startup_event():

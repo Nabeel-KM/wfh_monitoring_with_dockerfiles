@@ -1,12 +1,25 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
+import asyncio
 
 from ..services.mongodb import get_database
-from ..utils.helpers import ensure_timezone_aware, normalize_app_names
+from ..utils.helpers import ensure_timezone_aware, normalize_app_names, serialize_mongodb_doc
 
 router = APIRouter()
+
+class PaginationInfo(BaseModel):
+    total: int
+    page: int
+    per_page: int
+    pages: int
+
+class DashboardResponse(BaseModel):
+    data: List[Dict[str, Any]]
+    pagination: PaginationInfo
+
+    model_config = ConfigDict(from_attributes=True)
 
 class DashboardData(BaseModel):
     username: str
@@ -23,89 +36,153 @@ class DashboardData(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-@router.get("/dashboard")
-async def get_dashboard():
-    """Get dashboard data."""
+async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) -> Dict[str, Any]:
+    """Get dashboard data for a single user"""
     try:
         db = await get_database()
         if db is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
-            
-        users = db.users
-        sessions = db.sessions
-        activities = db.activities
-        daily_summaries = db.daily_summaries
+
+        # Get latest session
+        latest_session = await db.sessions.find_one(
+            {"user_id": user["_id"]},
+            sort=[("timestamp", -1)]
+        )
+
+        # Get first join and last leave for today
+        day_start = datetime.combine(current_date, datetime.min.time(), tzinfo=timezone.utc)
+        day_end = datetime.combine(current_date, datetime.max.time(), tzinfo=timezone.utc)
         
-        # Get current time
-        now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        today_str = today_start.strftime("%Y-%m-%d")  # Convert to string format
+        first_join = await db.sessions.find_one({
+            "user_id": user["_id"],
+            "event": "joined",
+            "start_time": {"$gte": day_start, "$lte": day_end}
+        }, sort=[("start_time", 1)])
         
-        # Get all users
-        users_list = await users.find().to_list(length=None)
-        
-        # Process each user's data
-        dashboard_data = []
-        for user in users_list:
-            # Get latest session
-            latest_session = await sessions.find_one(
-                {"user_id": user["_id"]},
-                sort=[("timestamp", -1)]
-            )
-            
-            # Get today's activities
-            today_activities = await activities.find({
-                "user_id": user["_id"],
-                "timestamp": {"$gte": today_start}
-            }).to_list(length=None)
-            
-            # Get today's daily summary using string date
-            today_summary = await daily_summaries.find_one({
-                "user_id": user["_id"],
-                "date": today_str
-            })
-            
-            # Calculate app usage
-            app_usage = {}
-            for activity in today_activities:
-                active_app = activity.get("active_app")
-                if active_app:
-                    if active_app in app_usage:
-                        app_usage[active_app] += 1
-                    else:
-                        app_usage[active_app] = 1
-            
-            # Normalize and sort app usage
-            normalized_usage = normalize_app_names(app_usage)
-            sorted_usage = dict(sorted(normalized_usage.items(), key=lambda x: x[1], reverse=True))
-            
-            # Get most active app
-            most_active_app = max(sorted_usage.items(), key=lambda x: x[1])[0] if sorted_usage else None
-            
-            # Create user dashboard data
-            user_data = {
-                "username": user["username"],
-                "display_name": user.get("display_name", user["username"]),
-                "active_app": most_active_app,
-                "active_apps": list(sorted_usage.keys()),
-                "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
-                "channel": latest_session.get("channel") if latest_session else None,
-                "timestamp": latest_session.get("timestamp").isoformat() if latest_session and latest_session.get("timestamp") else None,
-                "total_active_time": today_summary.get("total_active_time", 0) if today_summary else 0,
-                "total_idle_time": today_summary.get("total_idle_time", 0) if today_summary else 0,
-                "total_session_time": today_summary.get("total_session_time", 0) if today_summary else 0,
-                "total_working_hours": today_summary.get("total_working_hours", 0) if today_summary else 0
-            }
-            
-            dashboard_data.append(user_data)
-        
+        last_leave = await db.sessions.find_one({
+            "user_id": user["_id"],
+            "event": "left",
+            "stop_time": {"$gte": day_start, "$lte": day_end}
+        }, sort=[("stop_time", -1)])
+
+        # Calculate session time
+        total_session_hours = 0
+        if first_join and last_leave and first_join.get("start_time") and last_leave.get("stop_time"):
+            first_join_time = ensure_timezone_aware(first_join["start_time"])
+            last_leave_time = ensure_timezone_aware(last_leave["stop_time"])
+            if last_leave_time > first_join_time:
+                total_session_seconds = (last_leave_time - first_join_time).total_seconds()
+                total_session_hours = round(total_session_seconds / 3600, 2)
+
+        # Get app usage
+        day_str = current_date.strftime("%Y-%m-%d")
+        activities = await db.activities.find({
+            "user_id": user["_id"],
+            "date": day_str
+        }).to_list(length=None)
+
+        app_usage = [
+            {"app_name": a["app_name"], "total_time": max(a.get("total_time", 0), 0)}
+            for a in activities
+        ] if activities else []
+
+        # Get daily summary
+        daily_summary = await db.daily_summaries.find_one({
+            "user_id": user["_id"],
+            "date": day_str
+        })
+
+        # Calculate total active time
+        total_active_time = 0
+        if daily_summary and "total_active_time" in daily_summary:
+            total_active_time = daily_summary["total_active_time"]
+
+        # Get most active app
+        most_active_app = None
+        most_used_app_time = 0
+        if app_usage:
+            most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0))
+            most_used_app = most_active_app.get("app_name")
+            most_used_app_time = round(most_active_app.get("total_time", 0), 2)
+
+        # Format timestamps
+        timestamp = None
+        if latest_session and latest_session.get("timestamp"):
+            timestamp_dt = ensure_timezone_aware(latest_session.get("timestamp"))
+            timestamp = timestamp_dt.isoformat()
+
+        duty_start_time = None
+        if first_join and first_join.get("start_time"):
+            start_time_dt = ensure_timezone_aware(first_join.get("start_time"))
+            duty_start_time = start_time_dt.isoformat()
+
+        duty_end_time = None
+        if last_leave and last_leave.get("stop_time"):
+            end_time_dt = ensure_timezone_aware(last_leave.get("stop_time"))
+            duty_end_time = end_time_dt.isoformat()
+
         return {
+            "username": user["username"],
+            "display_name": user.get("display_name", user["username"]),
+            "channel": latest_session.get("channel") if latest_session else None,
+            "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
+            "timestamp": timestamp,
+            "active_app": most_used_app,
+            "active_apps": [a["app_name"] for a in app_usage if a.get("total_time", 0) > 0],
+            "screen_share_time": latest_session.get("screen_share_time", 0) if latest_session else 0,
+            "total_idle_time": daily_summary.get("total_idle_time", 0) if daily_summary else 0,
+            "total_active_time": total_active_time,
+            "total_session_time": total_session_hours,
+            "duty_start_time": duty_start_time,
+            "duty_end_time": duty_end_time,
+            "app_usage": app_usage,
+            "most_used_app": most_used_app,
+            "most_used_app_time": most_used_app_time
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/dashboard", response_model=DashboardResponse)
+async def get_dashboard(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(100, ge=1, le=1000)
+):
+    """Get dashboard data for all users with pagination"""
+    try:
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+
+        # Get total count for pagination info
+        total_users = await db.users.count_documents({})
+        
+        # Calculate skip value
+        skip = (page - 1) * per_page
+        
+        # Get users for current page
+        users = await db.users.find().skip(skip).limit(per_page).to_list(length=per_page)
+        current_date = datetime.now(timezone.utc).date()
+        
+        # Process user data concurrently
+        tasks = [get_user_dashboard_data(user, current_date) for user in users]
+        dashboard_data = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Filter out errors and None values
+        dashboard_data = [data for data in dashboard_data if not isinstance(data, Exception) and data is not None]
+        
+        # Add pagination metadata
+        response_data = {
             "data": dashboard_data,
-            "timestamp": now.isoformat()
+            "pagination": {
+                "total": total_users,
+                "page": page,
+                "per_page": per_page,
+                "pages": (total_users + per_page - 1) // per_page
+            }
         }
         
+        return response_data
     except Exception as e:
-        print(f"Error in get_dashboard: {str(e)}")  # Add logging
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/dashboard/overview")

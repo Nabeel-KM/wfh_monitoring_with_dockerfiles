@@ -1,162 +1,183 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Query
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
+import asyncio
 
 from ..services.mongodb import get_database
-from ..utils.helpers import ensure_timezone_aware, normalize_app_names
+from ..utils.helpers import ensure_timezone_aware, normalize_app_names, serialize_mongodb_doc
 
 router = APIRouter()
+
+class DailyData(BaseModel):
+    date: str
+    first_activity: Optional[str]
+    last_activity: Optional[str]
+    total_session_time: float
+    total_active_time: float
+    total_idle_time: float
+    app_usage: List[Dict[str, Any]]
+    most_used_app: Optional[str]
+    most_used_app_time: float
 
 class HistoryData(BaseModel):
     username: str
     display_name: str
-    days: List[Dict[str, Any]] = []
+    days: List[DailyData]
 
     model_config = ConfigDict(from_attributes=True)
 
-@router.get("/history")
-async def get_history(username: str, days: int = 7):
-    """Get user history for the specified number of days."""
+async def get_session_data(user_id: str, day_str: str, sessions_data: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Get session data for a specific day"""
+    return next((s for s in sessions_data if s["_id"]["user_id"] == user_id and s["_id"]["date"] == day_str), None)
+
+async def get_daily_data(user_id: str, day_str: str, session_data: Optional[Dict[str, Any]], db) -> Dict[str, Any]:
+    """Get daily data for a user"""
+    try:
+        # Get first join and last leave times
+        first_join_time = None
+        last_leave_time = None
+        total_session_hours = 0
+        
+        if session_data:
+            first_join_time = session_data.get("first_join")
+            last_leave_time = session_data.get("last_leave")
+            
+            if first_join_time and last_leave_time:
+                first_join_time = ensure_timezone_aware(first_join_time)
+                last_leave_time = ensure_timezone_aware(last_leave_time)
+                
+                if last_leave_time > first_join_time:
+                    total_session_seconds = (last_leave_time - first_join_time).total_seconds()
+                    total_session_hours = round(total_session_seconds / 3600, 2)
+
+        # Get activities
+        activities = await db.activities.find({
+            "user_id": user_id,
+            "date": day_str
+        }).to_list(length=None)
+
+        # Process app usage
+        app_usage = [
+            {"app_name": a["app_name"], "total_time": max(a.get("total_time", 0), 0)}
+            for a in activities
+        ] if activities else []
+
+        # Get most active app
+        most_active_app = None
+        most_used_app_time = 0
+        if app_usage:
+            most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0))
+            most_used_app = most_active_app.get("app_name")
+            most_used_app_time = round(most_active_app.get("total_time", 0), 2)
+
+        # Get daily summary
+        daily_summary = await db.daily_summaries.find_one({
+            "user_id": user_id,
+            "date": day_str
+        })
+
+        # Format timestamps
+        first_activity = first_join_time.isoformat() if first_join_time else None
+        last_activity = last_leave_time.isoformat() if last_leave_time else None
+
+        # Calculate active time
+        active_time = 0
+        if daily_summary and "total_active_time" in daily_summary:
+            active_time = round(daily_summary.get("total_active_time", 0) / 60, 2)  # Convert minutes to hours
+
+        # Calculate idle time
+        idle_time = 0
+        if daily_summary and "total_idle_time" in daily_summary:
+            idle_time = round(daily_summary.get("total_idle_time", 0) / 60, 2)  # Convert minutes to hours
+
+        return {
+            "date": day_str,
+            "first_activity": first_activity,
+            "last_activity": last_activity,
+            "total_session_time": total_session_hours,
+            "total_active_time": active_time,
+            "total_idle_time": idle_time,
+            "app_usage": app_usage,
+            "most_used_app": most_used_app,
+            "most_used_app_time": most_used_app_time
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/history", response_model=List[HistoryData])
+async def get_history(
+    username: Optional[str] = None,
+    days: int = Query(30, ge=1, le=365)
+):
+    """Get user history data"""
     try:
         db = await get_database()
         if db is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
-            
-        users = db.users
-        sessions = db.sessions
-        activities = db.activities
-        daily_summaries = db.daily_summaries
-        
-        # Get user
-        user = await users.find_one({"username": username})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
+
+        # Get users
+        if username:
+            user = await db.users.find_one({"username": username})
+            if not user:
+                raise HTTPException(status_code=404, detail=f"User not found: {username}")
+            users = [user]
+        else:
+            users = await db.users.find().to_list(length=None)
+
+        if not users:
+            raise HTTPException(status_code=404, detail="No users found")
+
         # Calculate date range
-        end_date = datetime.now(timezone.utc)
+        end_date = datetime.now(timezone.utc).date()
         start_date = end_date - timedelta(days=days-1)
-        
-        # Get sessions for the date range
-        sessions_list = await sessions.find({
-            "user_id": user["_id"],
-            "timestamp": {
-                "$gte": start_date,
-                "$lte": end_date
-            }
-        }).sort("timestamp", -1).to_list(length=None)
-        
-        # Get activities for the date range
-        activities_list = await activities.find({
-            "user_id": user["_id"],
-            "timestamp": {
-                "$gte": start_date,
-                "$lte": end_date
-            }
-        }).sort("timestamp", -1).to_list(length=None)
-        
-        # Get daily summaries for the date range
-        summaries_list = await daily_summaries.find({
-            "user_id": user["_id"],
-            "date": {
-                "$gte": start_date.strftime("%Y-%m-%d"),
-                "$lte": end_date.strftime("%Y-%m-%d")
-            }
-        }).sort("date", -1).to_list(length=None)
-        
-        # Process the data
-        history_data = {
-            "username": username,
-            "display_name": user.get("display_name", username),
-            "days": []
-        }
-        
-        # Create a dictionary of daily data
-        daily_data = {}
-        current_date = start_date
-        while current_date <= end_date:
-            date_str = current_date.strftime("%Y-%m-%d")
-            daily_data[date_str] = {
-                "date": date_str,
-                "first_activity": None,
-                "last_activity": None,
-                "total_session_time": 0,
-                "total_active_time": 0,
-                "total_idle_time": 0,
-                "app_usage": [],
-                "most_used_app": None,
-                "most_used_app_time": 0
-            }
-            current_date += timedelta(days=1)
-        
-        # Process sessions
-        for session in sessions_list:
-            if session.get("timestamp"):
-                date_str = session["timestamp"].strftime("%Y-%m-%d")
-                if date_str in daily_data:
-                    # Update first and last activity times
-                    if not daily_data[date_str]["first_activity"] or session["timestamp"] < datetime.fromisoformat(daily_data[date_str]["first_activity"]):
-                        daily_data[date_str]["first_activity"] = session["timestamp"].isoformat()
-                    if not daily_data[date_str]["last_activity"] or session["timestamp"] > datetime.fromisoformat(daily_data[date_str]["last_activity"]):
-                        daily_data[date_str]["last_activity"] = session["timestamp"].isoformat()
-                    
-                    # Update session time
-                    if session.get("start_time") and session.get("stop_time"):
-                        start_time = ensure_timezone_aware(session["start_time"])
-                        stop_time = ensure_timezone_aware(session["stop_time"])
-                        if stop_time > start_time:
-                            duration = (stop_time - start_time).total_seconds() / 3600  # Convert to hours
-                            daily_data[date_str]["total_session_time"] += round(duration, 2)
-        
-        # Process activities
-        for activity in activities_list:
-            if activity.get("timestamp"):
-                date_str = activity["timestamp"].strftime("%Y-%m-%d")
-                if date_str in daily_data:
-                    # Update first and last activity times
-                    if not daily_data[date_str]["first_activity"] or activity["timestamp"] < datetime.fromisoformat(daily_data[date_str]["first_activity"]):
-                        daily_data[date_str]["first_activity"] = activity["timestamp"].isoformat()
-                    if not daily_data[date_str]["last_activity"] or activity["timestamp"] > datetime.fromisoformat(daily_data[date_str]["last_activity"]):
-                        daily_data[date_str]["last_activity"] = activity["timestamp"].isoformat()
-                    
-                    # Update app usage
-                    if activity.get("active_app"):
-                        app_name = activity["active_app"]
-                        duration = activity.get("duration", 0)
-                        
-                        # Find existing app in app_usage
-                        app_entry = next((app for app in daily_data[date_str]["app_usage"] if app["app_name"] == app_name), None)
-                        if app_entry:
-                            app_entry["total_time"] += duration
-                        else:
-                            daily_data[date_str]["app_usage"].append({
-                                "app_name": app_name,
-                                "total_time": duration
-                            })
-        
-        # Process daily summaries
-        for summary in summaries_list:
-            date_str = summary.get("date")
-            if date_str in daily_data:
-                daily_data[date_str]["total_active_time"] = summary.get("total_active_time", 0)
-                daily_data[date_str]["total_idle_time"] = summary.get("total_idle_time", 0)
-        
-        # Calculate most used app for each day
-        for date_str, data in daily_data.items():
-            if data["app_usage"]:
-                most_used = max(data["app_usage"], key=lambda x: x["total_time"])
-                data["most_used_app"] = most_used["app_name"]
-                data["most_used_app_time"] = most_used["total_time"]
-        
-        # Convert daily data to list and add to history
-        history_data["days"] = list(daily_data.values())
-        
+
+        # Get sessions data
+        pipeline = [
+            {"$match": {
+                "user_id": {"$in": [user["_id"] for user in users]},
+                "$or": [
+                    {"start_time": {"$gte": start_date, "$lte": end_date}},
+                    {"stop_time": {"$gte": start_date, "$lte": end_date}}
+                ]
+            }},
+            {"$sort": {"start_time": 1}},
+            {"$group": {
+                "_id": {
+                    "user_id": "$user_id",
+                    "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$start_time"}}
+                },
+                "first_join": {"$first": "$start_time"},
+                "last_leave": {"$last": "$stop_time"}
+            }}
+        ]
+        sessions_data = await db.sessions.aggregate(pipeline).to_list(length=None)
+
+        # Process user history
+        history_data = []
+        for user in users:
+            try:
+                user_history = {
+                    "username": user["username"],
+                    "display_name": user.get("display_name", user["username"]),
+                    "days": []
+                }
+
+                for i in range(days):
+                    day = start_date + timedelta(days=i)
+                    day_str = day.strftime("%Y-%m-%d")
+                    session_data = await get_session_data(user["_id"], day_str, sessions_data)
+                    daily_data = await get_daily_data(user["_id"], day_str, session_data, db)
+                    user_history["days"].append(daily_data)
+
+                history_data.append(user_history)
+            except Exception as e:
+                # Log error but continue processing other users
+                print(f"Error processing history for user {user.get('username')}: {e}")
+                continue
+
         return history_data
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"Error in get_history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/history/sessions")

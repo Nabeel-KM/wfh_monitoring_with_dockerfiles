@@ -39,6 +39,7 @@ async def get_dashboard():
         # Get current time
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_str = today_start.strftime("%Y-%m-%d")  # Convert to string format
         
         # Get all users
         users_list = await users.find().to_list(length=None)
@@ -58,10 +59,10 @@ async def get_dashboard():
                 "timestamp": {"$gte": today_start}
             }).to_list(length=None)
             
-            # Get today's daily summary
+            # Get today's daily summary using string date
             today_summary = await daily_summaries.find_one({
                 "user_id": user["_id"],
-                "date": today_start.date()
+                "date": today_str
             })
             
             # Calculate app usage

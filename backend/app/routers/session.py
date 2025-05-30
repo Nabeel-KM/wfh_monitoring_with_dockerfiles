@@ -176,6 +176,7 @@ async def get_session_status(username: str):
         users = db.users
         sessions = db.sessions
         
+        # Get user
         user = await users.find_one({"username": username})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
@@ -186,17 +187,31 @@ async def get_session_status(username: str):
             sort=[("timestamp", -1)]
         )
         
-        return {
+        # Format response
+        response = {
             "username": user["username"],
             "display_name": user.get("display_name", user["username"]),
-            "screen_shared": session.get("screen_shared", False) if session else False,
-            "channel": session.get("channel") if session else None,
-            "timestamp": session.get("timestamp").isoformat() if session and session.get("timestamp") else None,
-            "active_app": session.get("active_app") if session else None,
-            "active_apps": session.get("active_apps", []) if session else [],
-            "last_event": session.get("event") if session else None,
+            "screen_shared": False,
+            "channel": None,
+            "timestamp": None,
+            "active_app": None,
+            "active_apps": [],
+            "last_event": None,
             "last_update": datetime.now(timezone.utc).isoformat()
         }
+        
+        # Update response with session data if available
+        if session:
+            response.update({
+                "screen_shared": session.get("screen_shared", False),
+                "channel": session.get("channel"),
+                "timestamp": session.get("timestamp").isoformat() if session.get("timestamp") else None,
+                "active_app": session.get("active_app"),
+                "active_apps": session.get("active_apps", []),
+                "last_event": session.get("event")
+            })
+        
+        return response
         
     except HTTPException:
         raise

@@ -39,8 +39,8 @@ app.add_middleware(
     allow_origins=["https://wfh.kryptomind.net"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "Cache-Control"],
-    expose_headers=["Content-Type", "Authorization", "Cache-Control"],
+    allow_headers=["*"],  # Allow all headers
+    expose_headers=["*"],  # Expose all headers
     max_age=600,  # Cache preflight requests for 10 minutes
 )
 
@@ -53,6 +53,11 @@ async def add_request_id(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(time.time()))
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
+    # Add CORS headers to all responses
+    response.headers["Access-Control-Allow-Origin"] = "https://wfh.kryptomind.net"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
 # Add request logging middleware

@@ -64,16 +64,30 @@ async def add_request_id(request: Request, call_next):
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     start_time = time.time()
+    
+    # Log detailed request information
+    logger.info(f"""
+🔍 Request Details:
+    Method: {request.method}
+    URL: {request.url}
+    Client Host: {request.client.host if request.client else 'Unknown'}
+    Headers: {dict(request.headers)}
+    Query Params: {dict(request.query_params)}
+    Origin: {request.headers.get('origin', 'No Origin')}
+    Referer: {request.headers.get('referer', 'No Referer')}
+    User-Agent: {request.headers.get('user-agent', 'No User-Agent')}
+""")
+    
     response = await call_next(request)
     duration = time.time() - start_time
     
-    log_request(
-        request_id=request.headers.get("X-Request-ID", str(time.time())),
-        method=request.method,
-        path=request.url.path,
-        status_code=response.status_code,
-        duration=duration
-    )
+    # Log response information
+    logger.info(f"""
+📤 Response Details:
+    Status: {response.status_code}
+    Duration: {duration:.3f}s
+    Headers: {dict(response.headers)}
+""")
     
     return response
 

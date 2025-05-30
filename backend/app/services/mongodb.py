@@ -51,12 +51,18 @@ async def close_mongodb_connection():
     if client:
         client.close()
 
-def get_database():
+async def get_database():
     """Get database instance."""
+    global db
+    if db is None:
+        await connect_to_mongodb()
     return db
 
-def get_collections():
+async def get_collections():
     """Get all collections."""
+    global users_collection, sessions_collection, activities_collection, daily_summaries_collection
+    if any(c is None for c in [users_collection, sessions_collection, activities_collection, daily_summaries_collection]):
+        await connect_to_mongodb()
     return {
         "users": users_collection,
         "sessions": sessions_collection,

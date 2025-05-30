@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 from bson import ObjectId
 
-from ..services.mongodb import get_database
+from ..services.mongodb import get_database, get_collections
 from ..models.database import User, Session
 from ..utils.helpers import ensure_timezone_aware
 
@@ -24,12 +24,9 @@ class SessionData(BaseModel):
 async def handle_session(data: SessionData):
     """Handle session events (join, leave, start/stop streaming)."""
     try:
-        db = await get_database()
-        if db is None:
-            raise HTTPException(status_code=500, detail="Database connection not available")
-            
-        users = db.users
-        sessions = db.sessions
+        collections = await get_collections()
+        users = collections["users"]
+        sessions = collections["sessions"]
         
         # Validate event type
         if data.event not in ['joined', 'left', 'started_streaming', 'stopped_streaming']:
@@ -169,12 +166,9 @@ async def handle_session(data: SessionData):
 async def get_session_status(username: str):
     """Get current session status for a user."""
     try:
-        db = await get_database()
-        if db is None:
-            raise HTTPException(status_code=500, detail="Database connection not available")
-            
-        users = db.users
-        sessions = db.sessions
+        collections = await get_collections()
+        users = collections["users"]
+        sessions = collections["sessions"]
         
         # Get user
         user = await users.find_one({"username": username})

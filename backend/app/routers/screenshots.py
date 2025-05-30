@@ -12,9 +12,22 @@ from ..utils.helpers import ensure_timezone_aware
 router = APIRouter()
 
 class ScreenshotData(BaseModel):
+    url: str
+    thumbnail_url: Optional[str] = None
+    key: str
+    timestamp: str
+    size: int
+    last_modified: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+class ScreenshotsResponse(BaseModel):
+    screenshots: List[ScreenshotData] = []
+    count: int = 0
     username: str
     date: str
-    screenshots: List[Dict[str, Any]] = []
+    timestamp: str
+    message: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -32,18 +45,15 @@ def get_s3_client():
         raise HTTPException(status_code=500, detail="Failed to initialize S3 client")
 
 @router.get("/screenshots")
-async def get_screenshots(username: str, date: str):
+async def list_screenshots(username: str, date: str):
     """Get screenshots for a user on a specific date."""
     try:
-        db = await get_database()
-        if db is None:
-            raise HTTPException(status_code=500, detail="Database connection not available")
-            
-        # Get user
-        user = await db.users.find_one({"username": username})
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-        
+        # Validate date format
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
         # Initialize S3 client
         s3_client = get_s3_client()
         S3_BUCKET = os.getenv('S3_BUCKET', 'km-wfh-monitoring-bucket')
@@ -55,9 +65,8 @@ async def get_screenshots(username: str, date: str):
                 Bucket=S3_BUCKET,
                 Prefix=prefix
             )
-        except ClientError as e:
-            print(f"S3 list objects error: {str(e)}")
-            raise HTTPException(status_code=500, detail="Failed to list screenshots from S3")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error accessing S3: {str(e)}")
         
         # Extract screenshot URLs
         screenshots = []
@@ -69,27 +78,33 @@ async def get_screenshots(username: str, date: str):
                     thumbnail_key = obj['Key'].replace('.png', '-thumb.png')
                     thumbnail_url = f"https://{S3_BUCKET}.s3.{os.getenv('AWS_REGION', 'us-east-1')}.amazonaws.com/{thumbnail_key}"
                     
-                    screenshots.append({
-                        'url': url,
-                        'thumbnail_url': thumbnail_url,
-                        'key': obj['Key'],
-                        'timestamp': obj['LastModified'].isoformat(),
-                        'size': obj['Size'],
-                        'last_modified': obj['LastModified'].isoformat()
-                    })
+                    screenshots.append(ScreenshotData(
+                        url=url,
+                        thumbnail_url=thumbnail_url,
+                        key=obj['Key'],
+                        timestamp=obj['LastModified'].isoformat(),
+                        size=obj['Size'],
+                        last_modified=obj['LastModified'].isoformat()
+                    ))
         
-        return {
-            'screenshots': sorted(screenshots, key=lambda x: x['key']),
-            'count': len(screenshots),
-            'username': username,
-            'date': date,
-            'timestamp': datetime.now(timezone.utc).isoformat()
-        }
+        # Sort screenshots by timestamp
+        screenshots.sort(key=lambda x: x.timestamp, reverse=True)
+        
+        # Prepare response
+        response = ScreenshotsResponse(
+            screenshots=screenshots,
+            count=len(screenshots),
+            username=username,
+            date=date,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            message="No screenshots found for this date" if not screenshots else None
+        )
+        
+        return response
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_screenshots: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/screenshots/upload")

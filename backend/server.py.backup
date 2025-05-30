@@ -838,11 +838,6 @@ def get_user_dashboard_data(user, current_date):
         except Exception:
             daily_summaries = []
         
-        # Convert hours to minutes for frontend display
-        total_session_minutes = int(total_session_hours * 60) if total_session_hours else 0
-        total_working_minutes = int(total_working_hours * 60) if total_working_hours else 0
-        total_active_minutes = int(total_active_time) if total_active_time else 0
-        
         return {
             "username": user["username"],
             "display_name": user.get("display_name", user["username"]),
@@ -853,9 +848,9 @@ def get_user_dashboard_data(user, current_date):
             "active_apps": active_apps or [],
             "screen_share_time": latest_session.get("screen_share_time", 0) if latest_session else 0,
             "total_idle_time": daily_summary.get("total_idle_time", 0) if daily_summary else 0,
-            "total_active_time": total_active_minutes,
-            "total_session_time": total_session_minutes,
-            "total_working_hours": total_working_minutes,
+            "total_active_time": total_active_time or 0,
+            "total_session_time": total_session_hours or 0,
+            "total_working_hours": total_working_hours or 0,
             "duty_start_time": duty_start_time,
             "duty_end_time": duty_end_time,
             "app_usage": app_usage or [],

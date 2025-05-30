@@ -28,7 +28,7 @@ async def get_dashboard():
     """Get dashboard data."""
     try:
         db = get_database()
-        if not db:
+        if db is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
             
         users = db.users

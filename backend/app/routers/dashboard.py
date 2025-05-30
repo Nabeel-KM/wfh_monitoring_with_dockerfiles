@@ -23,7 +23,7 @@ class DashboardData(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-@router.get("/")
+@router.get("/dashboard")
 async def get_dashboard():
     """Get dashboard data."""
     try:

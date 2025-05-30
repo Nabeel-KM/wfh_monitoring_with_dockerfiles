@@ -23,6 +23,86 @@ class DashboardData(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+@router.get("/")
+async def get_dashboard():
+    """Get dashboard data."""
+    try:
+        collections = get_collections()
+        users = collections["users"]
+        sessions = collections["sessions"]
+        activities = collections["activities"]
+        daily_summaries = collections["daily_summaries"]
+        
+        # Get current time
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        
+        # Get all users
+        users_list = await users.find().to_list(length=None)
+        
+        # Process each user's data
+        dashboard_data = []
+        for user in users_list:
+            # Get latest session
+            latest_session = await sessions.find_one(
+                {"user_id": user["_id"]},
+                sort=[("timestamp", -1)]
+            )
+            
+            # Get today's activities
+            today_activities = await activities.find({
+                "user_id": user["_id"],
+                "timestamp": {"$gte": today_start}
+            }).to_list(length=None)
+            
+            # Get today's daily summary
+            today_summary = await daily_summaries.find_one({
+                "user_id": user["_id"],
+                "date": today_start.date()
+            })
+            
+            # Calculate app usage
+            app_usage = {}
+            for activity in today_activities:
+                active_app = activity.get("active_app")
+                if active_app:
+                    if active_app in app_usage:
+                        app_usage[active_app] += 1
+                    else:
+                        app_usage[active_app] = 1
+            
+            # Normalize and sort app usage
+            normalized_usage = normalize_app_names(app_usage)
+            sorted_usage = dict(sorted(normalized_usage.items(), key=lambda x: x[1], reverse=True))
+            
+            # Get most active app
+            most_active_app = max(sorted_usage.items(), key=lambda x: x[1])[0] if sorted_usage else None
+            
+            # Create user dashboard data
+            user_data = {
+                "username": user["username"],
+                "display_name": user.get("display_name", user["username"]),
+                "active_app": most_active_app,
+                "active_apps": list(sorted_usage.keys()),
+                "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
+                "channel": latest_session.get("channel") if latest_session else None,
+                "timestamp": latest_session.get("timestamp").isoformat() if latest_session and latest_session.get("timestamp") else None,
+                "total_active_time": today_summary.get("total_active_time", 0) if today_summary else 0,
+                "total_idle_time": today_summary.get("total_idle_time", 0) if today_summary else 0,
+                "total_session_time": today_summary.get("total_session_time", 0) if today_summary else 0,
+                "total_working_hours": today_summary.get("total_working_hours", 0) if today_summary else 0
+            }
+            
+            dashboard_data.append(user_data)
+        
+        return {
+            "data": dashboard_data,
+            "timestamp": now.isoformat()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/dashboard/overview")
 async def get_dashboard_overview():
     """Get overview statistics for the dashboard."""

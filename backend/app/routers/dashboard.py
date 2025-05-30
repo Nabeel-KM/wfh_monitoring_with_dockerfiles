@@ -53,18 +53,9 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
         day_start = datetime.combine(current_date, datetime.min.time(), tzinfo=timezone.utc)
         day_end = datetime.combine(current_date, datetime.max.time(), tzinfo=timezone.utc)
         
-        first_join = await db.sessions.find_one({
-            "user_id": user["_id"],
-            "event": "joined",
-            "start_time": {"$gte": day_start, "$lte": day_end}
-        }, sort=[("start_time", 1)])
+        print(f"🔍 Calculating session time for user {user['username']} on {current_date}")
+        print(f"📅 Day range: {day_start} to {day_end}")
         
-        last_leave = await db.sessions.find_one({
-            "user_id": user["_id"],
-            "event": "left",
-            "stop_time": {"$gte": day_start, "$lte": day_end}
-        }, sort=[("stop_time", -1)])
-
         # Calculate total working hours by summing all sessions
         total_session_hours = 0
         sessions = await db.sessions.find({
@@ -73,6 +64,8 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
             "stop_time": {"$ne": None}
         }).to_list(length=None)
         
+        print(f"📊 Found {len(sessions)} sessions for the day")
+        
         for session in sessions:
             if session.get("start_time") and session.get("stop_time"):
                 start_time = ensure_timezone_aware(session["start_time"])
@@ -80,10 +73,17 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
                 if stop_time > start_time:
                     duration = (stop_time - start_time).total_seconds()
                     total_session_hours += duration
+                    print(f"⏱️ Session duration: {duration} seconds (from {start_time} to {stop_time})")
+                else:
+                    print(f"⚠️ Invalid session: stop_time ({stop_time}) is before start_time ({start_time})")
+            else:
+                print(f"⚠️ Session missing start_time or stop_time: {session}")
         
         # Convert to hours and round to 2 decimal places
         total_session_hours = round(total_session_hours / 3600, 2)
         total_working_hours = total_session_hours  # Use the same value for both
+        
+        print(f"📊 Total session hours: {total_session_hours}")
 
         # Get app usage
         day_str = current_date.strftime("%Y-%m-%d")
@@ -152,6 +152,7 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
             "most_used_app_time": most_used_app_time
         }
     except Exception as e:
+        print(f"❌ Error in get_user_dashboard_data: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/dashboard", response_model=DashboardResponse)

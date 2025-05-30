@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 import logging
+from bson import ObjectId
+import json
+from bson import json_util
 
 logger = logging.getLogger(__name__)
 
@@ -75,4 +78,25 @@ def log_request(request_id: str, method: str, path: str, status_code: int, durat
     """Log request details."""
     logger.info(
         f"Request {request_id}: {method} {path} - {status_code} ({duration:.3f}s)"
-    ) 
+    )
+
+def serialize_mongodb_doc(doc, max_depth=10):
+    """Helper function to serialize MongoDB documents"""
+    try:
+        # First try to use pymongo's json_util
+        return json.loads(json_util.dumps(doc))
+    except Exception:
+        # Fall back to manual serialization if json_util fails
+        def serialize(item, depth):
+            if depth > max_depth:
+                return str(item)
+            if isinstance(item, ObjectId):
+                return str(item)
+            elif isinstance(item, datetime):
+                return item.isoformat()
+            elif isinstance(item, dict):
+                return {k: serialize(v, depth + 1) for k, v in item.items()}
+            elif isinstance(item, list):
+                return [serialize(i, depth + 1) for i in item]
+            return item
+        return serialize(doc, 0) 

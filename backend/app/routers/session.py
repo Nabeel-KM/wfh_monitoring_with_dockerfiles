@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 from bson import ObjectId
 
-from ..services.mongodb import get_collections
+from ..services.mongodb import get_database
 from ..models.database import User, Session
 from ..utils.helpers import ensure_timezone_aware
 
@@ -12,6 +12,7 @@ router = APIRouter()
 
 class SessionData(BaseModel):
     username: str
+    display_name: Optional[str] = None
     channel: Optional[str] = None
     screen_shared: bool = False
     event: str
@@ -23,9 +24,12 @@ class SessionData(BaseModel):
 async def handle_session(data: SessionData):
     """Handle session events (join, leave, start/stop streaming)."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
         
         # Validate event type
         if data.event not in ['joined', 'left', 'started_streaming', 'stopped_streaming']:
@@ -148,18 +152,29 @@ async def handle_session(data: SessionData):
                     }
                 )
         
-        return {"status": "success"}
+        return {
+            "status": "success",
+            "username": data.username,
+            "event": data.event,
+            "timestamp": current_time.isoformat()
+        }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error in handle_session: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/session_status")
 async def get_session_status(username: str):
     """Get current session status for a user."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
         
         user = await users.find_one({"username": username})
         if not user:
@@ -178,10 +193,13 @@ async def get_session_status(username: str):
             "channel": session.get("channel") if session else None,
             "timestamp": session.get("timestamp").isoformat() if session and session.get("timestamp") else None,
             "active_app": session.get("active_app") if session else None,
-            "active_apps": session.get("active_apps", []) if session else []
+            "active_apps": session.get("active_apps", []) if session else [],
+            "last_event": session.get("event") if session else None,
+            "last_update": datetime.now(timezone.utc).isoformat()
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in get_session_status: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

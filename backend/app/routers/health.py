@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from datetime import datetime, timezone, timedelta
 import psutil
 import time
-from ..services.mongodb import get_database, get_collections
+from ..services.mongodb import get_database
 
 router = APIRouter()
 
@@ -18,7 +18,10 @@ async def health_check():
     # Check database connection
     try:
         start_time = time.time()
-        db = get_database()
+        db = await get_database()
+        if db is None:
+            raise Exception("Database connection not available")
+            
         await db.command("ping")
         db_response_time = time.time() - start_time
         
@@ -27,6 +30,7 @@ async def health_check():
             "response_time_ms": round(db_response_time * 1000, 2)
         }
     except Exception as e:
+        print(f"Database health check error: {str(e)}")
         health_data["status"] = "unhealthy"
         health_data["components"]["database"] = {
             "status": "error",
@@ -44,6 +48,7 @@ async def health_check():
             "usage_mb": round(memory_mb, 2)
         }
     except Exception as e:
+        print(f"Memory health check error: {str(e)}")
         health_data["components"]["memory"] = {
             "status": "unknown",
             "error": str(e)
@@ -51,20 +56,27 @@ async def health_check():
     
     # Check MongoDB connection pool
     try:
-        server_status = await db.command("serverStatus")
-        conn_stats = server_status.get("connections", {})
-        current = conn_stats.get("current", 0)
-        available = conn_stats.get("available", 0)
-        max_conns = current + available
-        usage_percent = (current / max_conns * 100) if max_conns > 0 else 0
-        
-        health_data["components"]["db_pool"] = {
-            "status": "ok" if usage_percent < 80 else "warning",
-            "current": current,
-            "available": available,
-            "usage_percent": round(usage_percent, 1)
-        }
+        if db is not None:
+            server_status = await db.command("serverStatus")
+            conn_stats = server_status.get("connections", {})
+            current = conn_stats.get("current", 0)
+            available = conn_stats.get("available", 0)
+            max_conns = current + available
+            usage_percent = (current / max_conns * 100) if max_conns > 0 else 0
+            
+            health_data["components"]["db_pool"] = {
+                "status": "ok" if usage_percent < 80 else "warning",
+                "current": current,
+                "available": available,
+                "usage_percent": round(usage_percent, 1)
+            }
+        else:
+            health_data["components"]["db_pool"] = {
+                "status": "error",
+                "error": "Database connection not available"
+            }
     except Exception as e:
+        print(f"DB pool health check error: {str(e)}")
         health_data["components"]["db_pool"] = {
             "status": "unknown",
             "error": str(e)
@@ -78,17 +90,19 @@ async def health_check():
 async def get_stats():
     """Get system statistics and metrics."""
     try:
-        collections = get_collections()
-        
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
         # Get collection stats
-        users_count = await collections["users"].count_documents({})
-        sessions_count = await collections["sessions"].count_documents({})
-        activities_count = await collections["activities"].count_documents({})
-        summaries_count = await collections["daily_summaries"].count_documents({})
+        users_count = await db.users.count_documents({})
+        sessions_count = await db.sessions.count_documents({})
+        activities_count = await db.activities.count_documents({})
+        summaries_count = await db.daily_summaries.count_documents({})
         
         # Get active users (users with activity in the last 24 hours)
         yesterday = datetime.now(timezone.utc) - timedelta(days=1)
-        active_users = len(await collections["daily_summaries"].distinct("user_id", {
+        active_users = len(await db.daily_summaries.distinct("user_id", {
             "last_updated": {"$gte": yesterday}
         }))
         
@@ -100,7 +114,7 @@ async def get_stats():
             {"$sort": {"total_time": -1}},
             {"$limit": 10}
         ]
-        top_apps = await collections["activities"].aggregate(pipeline).to_list(None)
+        top_apps = await db.activities.aggregate(pipeline).to_list(None)
         
         return {
             "database": {
@@ -114,5 +128,8 @@ async def get_stats():
             "server_time": datetime.now(timezone.utc).isoformat(),
             "uptime": time.time() - app.start_time if hasattr(app, 'start_time') else 0
         }
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"Error in get_stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

@@ -27,7 +27,7 @@ class DashboardData(BaseModel):
 async def get_dashboard():
     """Get dashboard data."""
     try:
-        db = get_database()
+        db = await get_database()
         if db is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
             
@@ -112,11 +112,14 @@ async def get_dashboard():
 async def get_dashboard_overview():
     """Get overview statistics for the dashboard."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
-        activities = collections["activities"]
-        daily_summaries = collections["daily_summaries"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
         
         # Get current time
         now = datetime.now(timezone.utc)
@@ -184,17 +187,21 @@ async def get_dashboard_overview():
         }
         
     except Exception as e:
+        print(f"Error in get_dashboard_overview: {str(e)}")  # Add logging
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/dashboard/user_stats")
 async def get_user_stats(username: str):
     """Get detailed statistics for a specific user."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
-        activities = collections["activities"]
-        daily_summaries = collections["daily_summaries"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
         
         # Get user
         user = await users.find_one({"username": username})
@@ -231,11 +238,12 @@ async def get_user_stats(username: str):
         # Calculate app usage
         app_usage = {}
         for activity in today_activities:
-            active_app = activity["active_app"]
-            if active_app in app_usage:
-                app_usage[active_app] += 1
-            else:
-                app_usage[active_app] = 1
+            active_app = activity.get("active_app")
+            if active_app:
+                if active_app in app_usage:
+                    app_usage[active_app] += 1
+                else:
+                    app_usage[active_app] = 1
         
         # Normalize and sort app usage
         normalized_usage = normalize_app_names(app_usage)
@@ -248,28 +256,32 @@ async def get_user_stats(username: str):
                 "screen_shared": today_session.get("screen_shared", False) if today_session else False,
                 "screen_share_time": today_session.get("screen_share_time", 0) if today_session else 0,
                 "start_time": today_session.get("start_time").isoformat() if today_session and today_session.get("start_time") else None,
-                "active_app": today_session.get("active_app") if today_session else None
+                "stop_time": today_session.get("stop_time").isoformat() if today_session and today_session.get("stop_time") else None
             },
             "today_stats": {
                 "total_activities": len(today_activities),
-                "app_usage": sorted_usage,
-                "screen_share_time": today_session.get("screen_share_time", 0) if today_session else 0
+                "total_active_time": today_summary.get("total_active_time", 0) if today_summary else 0,
+                "total_idle_time": today_summary.get("total_idle_time", 0) if today_summary else 0,
+                "total_session_time": today_summary.get("total_session_time", 0) if today_summary else 0,
+                "total_working_hours": today_summary.get("total_working_hours", 0) if today_summary else 0
             },
-            "daily_summary": today_summary if today_summary else None
+            "app_usage": sorted_usage
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
+        print(f"Error in get_user_stats: {str(e)}")  # Add logging
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/dashboard/active_users")
 async def get_active_users():
     """Get list of currently active users."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
         
         # Get current time
         now = datetime.now(timezone.utc)
@@ -280,23 +292,37 @@ async def get_active_users():
             "timestamp": {"$gte": five_minutes_ago}
         }).to_list(length=None)
         
+        # Get unique user IDs from active sessions
+        active_user_ids = list(set(session["user_id"] for session in active_sessions))
+        
         # Get user details
-        active_users = []
-        for session in active_sessions:
-            user = await users.find_one({"_id": session["user_id"]})
-            if user:
-                active_users.append({
-                    "username": user["username"],
-                    "display_name": user.get("display_name", user["username"]),
-                    "screen_shared": session.get("screen_shared", False),
-                    "active_app": session.get("active_app"),
-                    "last_activity": session.get("timestamp").isoformat() if session.get("timestamp") else None
-                })
+        active_users = await users.find({
+            "_id": {"$in": active_user_ids}
+        }).to_list(length=None)
+        
+        # Process user data
+        active_users_data = []
+        for user in active_users:
+            # Get latest session for this user
+            latest_session = next(
+                (s for s in active_sessions if s["user_id"] == user["_id"]),
+                None
+            )
+            
+            active_users_data.append({
+                "username": user["username"],
+                "display_name": user.get("display_name", user["username"]),
+                "screen_shared": latest_session.get("screen_shared", False) if latest_session else False,
+                "channel": latest_session.get("channel") if latest_session else None,
+                "last_activity": latest_session.get("timestamp").isoformat() if latest_session and latest_session.get("timestamp") else None
+            })
         
         return {
-            "active_users": active_users,
-            "count": len(active_users)
+            "active_users": active_users_data,
+            "count": len(active_users_data),
+            "timestamp": now.isoformat()
         }
         
     except Exception as e:
+        print(f"Error in get_active_users: {str(e)}")  # Add logging
         raise HTTPException(status_code=500, detail=str(e)) 

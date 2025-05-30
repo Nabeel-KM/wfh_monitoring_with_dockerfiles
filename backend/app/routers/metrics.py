@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 
-from ..services.mongodb import get_collections
+from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
 router = APIRouter()
@@ -27,11 +27,14 @@ class MetricsData(BaseModel):
 async def get_system_metrics():
     """Get system-wide metrics."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
-        activities = collections["activities"]
-        daily_summaries = collections["daily_summaries"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
         
         # Get current time
         now = datetime.now(timezone.utc)
@@ -114,10 +117,12 @@ async def get_system_metrics():
                 {"app": app["_id"], "count": app["count"]}
                 for app in top_apps
             ],
-            "daily_stats": processed_daily_stats
+            "daily_stats": processed_daily_stats,
+            "timestamp": now.isoformat()
         }
         
     except Exception as e:
+        print(f"Error in get_system_metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/metrics/user")
@@ -128,11 +133,14 @@ async def get_user_metrics(
 ):
     """Get detailed metrics for a specific user."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
-        activities = collections["activities"]
-        daily_summaries = collections["daily_summaries"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
         
         # Get user
         user = await users.find_one({"username": username})
@@ -179,11 +187,12 @@ async def get_user_metrics(
         # Calculate app usage
         app_usage = {}
         for activity in activities_list:
-            active_app = activity["active_app"]
-            if active_app in app_usage:
-                app_usage[active_app] += 1
-            else:
-                app_usage[active_app] = 1
+            active_app = activity.get("active_app")
+            if active_app:
+                if active_app in app_usage:
+                    app_usage[active_app] += 1
+                else:
+                    app_usage[active_app] = 1
         
         # Normalize and sort app usage
         normalized_usage = normalize_app_names(app_usage)
@@ -213,10 +222,12 @@ async def get_user_metrics(
             "total_activities": len(activities_list),
             "total_screen_share_time": total_screen_share,
             "app_usage": sorted_usage,
-            "daily_summaries": processed_summaries
+            "daily_summaries": processed_summaries,
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in get_user_metrics: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

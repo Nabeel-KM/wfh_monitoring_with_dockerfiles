@@ -3,18 +3,136 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 
-from ..services.mongodb import get_collections
+from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
 router = APIRouter()
 
 class HistoryData(BaseModel):
     username: str
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    activities: List[Dict[str, Any]] = []
+    display_name: str
+    days: List[Dict[str, Any]] = []
 
     model_config = ConfigDict(from_attributes=True)
+
+@router.get("/history")
+async def get_history(username: str, days: int = 7):
+    """Get user history for the specified number of days."""
+    try:
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
+        
+        # Get user
+        user = await users.find_one({"username": username})
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # Calculate date range
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(days=days-1)
+        
+        # Get sessions for the date range
+        sessions_list = await sessions.find({
+            "user_id": user["_id"],
+            "timestamp": {
+                "$gte": start_date,
+                "$lte": end_date
+            }
+        }).sort("timestamp", -1).to_list(length=None)
+        
+        # Get activities for the date range
+        activities_list = await activities.find({
+            "user_id": user["_id"],
+            "timestamp": {
+                "$gte": start_date,
+                "$lte": end_date
+            }
+        }).sort("timestamp", -1).to_list(length=None)
+        
+        # Get daily summaries for the date range
+        summaries_list = await daily_summaries.find({
+            "user_id": user["_id"],
+            "date": {
+                "$gte": start_date.strftime("%Y-%m-%d"),
+                "$lte": end_date.strftime("%Y-%m-%d")
+            }
+        }).sort("date", -1).to_list(length=None)
+        
+        # Process the data
+        history_data = {
+            "username": username,
+            "display_name": user.get("display_name", username),
+            "days": []
+        }
+        
+        # Create a dictionary of daily data
+        daily_data = {}
+        current_date = start_date
+        while current_date <= end_date:
+            date_str = current_date.strftime("%Y-%m-%d")
+            daily_data[date_str] = {
+                "date": date_str,
+                "sessions": [],
+                "activities": [],
+                "summary": None
+            }
+            current_date += timedelta(days=1)
+        
+        # Add sessions to daily data
+        for session in sessions_list:
+            if session.get("timestamp"):
+                date_str = session["timestamp"].strftime("%Y-%m-%d")
+                if date_str in daily_data:
+                    daily_data[date_str]["sessions"].append({
+                        "session_id": str(session["_id"]),
+                        "event": session.get("event"),
+                        "screen_shared": session.get("screen_shared", False),
+                        "screen_share_time": session.get("screen_share_time", 0),
+                        "start_time": session.get("start_time").isoformat() if session.get("start_time") else None,
+                        "stop_time": session.get("stop_time").isoformat() if session.get("stop_time") else None,
+                        "timestamp": session.get("timestamp").isoformat() if session.get("timestamp") else None
+                    })
+        
+        # Add activities to daily data
+        for activity in activities_list:
+            if activity.get("timestamp"):
+                date_str = activity["timestamp"].strftime("%Y-%m-%d")
+                if date_str in daily_data:
+                    daily_data[date_str]["activities"].append({
+                        "activity_id": str(activity["_id"]),
+                        "active_app": activity.get("active_app"),
+                        "active_apps": activity.get("active_apps", []),
+                        "timestamp": activity.get("timestamp").isoformat() if activity.get("timestamp") else None
+                    })
+        
+        # Add summaries to daily data
+        for summary in summaries_list:
+            date_str = summary.get("date")
+            if date_str in daily_data:
+                daily_data[date_str]["summary"] = {
+                    "total_screen_share_time": summary.get("total_screen_share_time", 0),
+                    "total_activities": summary.get("total_activities", 0),
+                    "app_usage": summary.get("app_usage", {}),
+                    "sessions": summary.get("sessions", 0),
+                    "average_session_duration": summary.get("average_session_duration", 0)
+                }
+        
+        # Convert daily data to list and add to history
+        history_data["days"] = list(daily_data.values())
+        
+        return history_data
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_history: {str(e)}")  # Add logging
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/history/sessions")
 async def get_session_history(

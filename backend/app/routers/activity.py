@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 
-from ..services.mongodb import get_collections
+from ..services.mongodb import get_database
 from ..models.database import Activity
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
@@ -21,10 +21,13 @@ class ActivityData(BaseModel):
 async def track_activity(data: ActivityData):
     """Track user activity and active applications."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        activities = collections["activities"]
-        sessions = collections["sessions"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        activities = db.activities
+        sessions = db.sessions
         
         # Get user
         user = await users.find_one({"username": data.username})
@@ -66,11 +69,17 @@ async def track_activity(data: ActivityData):
             }
         )
         
-        return {"status": "success"}
+        return {
+            "status": "success",
+            "username": data.username,
+            "active_app": data.active_app,
+            "timestamp": timestamp.isoformat()
+        }
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in track_activity: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/activity_history")
@@ -82,9 +91,12 @@ async def get_activity_history(
 ):
     """Get activity history for a user."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        activities = collections["activities"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        activities = db.activities
         
         # Get user
         user = await users.find_one({"username": username})
@@ -118,12 +130,14 @@ async def get_activity_history(
         return {
             "username": username,
             "activities": processed_activities,
-            "count": len(processed_activities)
+            "count": len(processed_activities),
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in get_activity_history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/app_usage")
@@ -134,9 +148,12 @@ async def get_app_usage(
 ):
     """Get application usage statistics for a user."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        activities = collections["activities"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        activities = db.activities
         
         # Get user
         user = await users.find_one({"username": username})
@@ -161,11 +178,12 @@ async def get_app_usage(
         # Process app usage
         app_usage = {}
         for activity in activity_list:
-            active_app = activity["active_app"]
-            if active_app in app_usage:
-                app_usage[active_app] += 1
-            else:
-                app_usage[active_app] = 1
+            active_app = activity.get("active_app")
+            if active_app:
+                if active_app in app_usage:
+                    app_usage[active_app] += 1
+                else:
+                    app_usage[active_app] = 1
         
         # Normalize app names
         normalized_usage = normalize_app_names(app_usage)
@@ -176,10 +194,12 @@ async def get_app_usage(
         return {
             "username": username,
             "app_usage": sorted_usage,
-            "total_activities": len(activity_list)
+            "total_activities": len(activity_list),
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         
     except HTTPException:
         raise
     except Exception as e:
+        print(f"Error in get_app_usage: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e)) 

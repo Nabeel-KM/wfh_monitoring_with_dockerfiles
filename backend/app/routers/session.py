@@ -50,7 +50,10 @@ async def handle_session(data: SessionData):
                 {"$set": {"display_name": data.display_name}}
             )
         
-        current_time = datetime.now(timezone.utc)
+        # Use provided timestamp or current time, ensuring it's timezone-aware
+        current_time = data.timestamp if data.timestamp else datetime.now(timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
         
         # Handle different events
         if data.event == "joined":
@@ -78,6 +81,8 @@ async def handle_session(data: SessionData):
             if latest_session:
                 start_time = latest_session.get("start_time")
                 if start_time:
+                    # Ensure start_time is timezone-aware
+                    start_time = ensure_timezone_aware(start_time)
                     duration = (current_time - start_time).total_seconds()
                     await sessions.update_one(
                         {"_id": latest_session["_id"]},
@@ -133,7 +138,7 @@ async def handle_session(data: SessionData):
             )
             
             if latest_session and latest_session.get("start_time"):
-                start_time = latest_session["start_time"]
+                start_time = ensure_timezone_aware(latest_session["start_time"])
                 duration = (current_time - start_time).total_seconds()
                 
                 await sessions.update_one(

@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 
-from ..services.mongodb import get_collections
+from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
 router = APIRouter()
@@ -27,11 +27,14 @@ class DashboardData(BaseModel):
 async def get_dashboard():
     """Get dashboard data."""
     try:
-        collections = get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
-        activities = collections["activities"]
-        daily_summaries = collections["daily_summaries"]
+        db = get_database()
+        if not db:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
         
         # Get current time
         now = datetime.now(timezone.utc)
@@ -101,6 +104,7 @@ async def get_dashboard():
         }
         
     except Exception as e:
+        print(f"Error in get_dashboard: {str(e)}")  # Add logging
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/dashboard/overview")

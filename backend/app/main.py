@@ -36,10 +36,12 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://wfh.kryptomind.net"],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "Cache-Control"],
+    expose_headers=["Content-Type", "Authorization", "Cache-Control"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 # Add Gzip compression

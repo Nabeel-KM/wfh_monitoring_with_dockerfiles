@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   Container, Typography, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, Paper, Switch, Box, Button, CircularProgress
@@ -125,6 +125,9 @@ function App() {
   const [screenshotsOpen, setScreenshotsOpen] = useState(false);
   const [screenshotsUser, setScreenshotsUser] = useState(null);
   const [screenshotsDate, setScreenshotsDate] = useState(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const fetchTimeoutRef = useRef(null);
+  const isMountedRef = useRef(true);
 
   const polishedTheme = createTheme({
     palette: {
@@ -181,31 +184,52 @@ function App() {
     },
   });
 
-  const fetchData = () => {
-    console.log('Fetching data from:', API);
-    axios.get(`${API}?t=${new Date().getTime()}`, {
-      headers: { 'Cache-Control': 'no-cache' }
-    })
-      .then(res => {
-        console.log("Raw API response:", res.data);
-        const processedData = res.data.map(user => ({
+  const fetchData = async () => {
+    if (isLoading || !isMountedRef.current) return;
+    
+    try {
+      setIsLoading(true);
+      const res = await axios.get(`${API}?t=${new Date().getTime()}`, {
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      
+      if (isMountedRef.current && res.data && Array.isArray(res.data.data)) {
+        const processedData = res.data.data.map(user => ({
           ...user,
           app_usage: Array.isArray(user.app_usage) ? user.app_usage : []
         }));
-        console.log("Processed data:", processedData);
         setData(processedData);
-      })
-      .catch(err => {
-        console.error("API fetch error:", err);
-        console.error("Error details:", err.response?.data);
-      });
+      }
+    } catch (err) {
+      console.error("API fetch error:", err);
+    } finally {
+      if (isMountedRef.current) {
+        setIsLoading(false);
+      }
+    }
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
+    
+    // Initial fetch
     fetchData();
-    const interval = setInterval(fetchData, 30000); // auto-refresh every 30 sec
-    return () => clearInterval(interval);
-  }, []);
+    
+    // Set up auto-refresh
+    const intervalId = setInterval(() => {
+      if (isMountedRef.current && !isLoading) {
+        fetchData();
+      }
+    }, 30000);
+    
+    // Cleanup function
+    return () => {
+      isMountedRef.current = false;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, []); // Empty dependency array
 
   const handleViewSummary = (username) => {
     const userSummary = data.find((u) => u.username === username)?.daily_summaries || [];

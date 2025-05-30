@@ -41,10 +41,12 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["https://wfh.kryptomind.net"],  # Specific origin
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*", "cache-control", "content-type", "authorization"],
+    expose_headers=["*"],
+    max_age=600,  # Cache preflight requests for 10 minutes
 )
 
 # Add Gzip compression
@@ -56,11 +58,6 @@ async def add_request_id(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID", str(time.time()))
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
-    # Add CORS headers to all responses
-    response.headers["Access-Control-Allow-Origin"] = "https://wfh.kryptomind.net"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "*"
     return response
 
 # Add request logging middleware

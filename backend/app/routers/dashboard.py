@@ -65,14 +65,25 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
             "stop_time": {"$gte": day_start, "$lte": day_end}
         }, sort=[("stop_time", -1)])
 
-        # Calculate session time
+        # Calculate total working hours by summing all sessions
         total_session_hours = 0
-        if first_join and last_leave and first_join.get("start_time") and last_leave.get("stop_time"):
-            first_join_time = ensure_timezone_aware(first_join["start_time"])
-            last_leave_time = ensure_timezone_aware(last_leave["stop_time"])
-            if last_leave_time > first_join_time:
-                total_session_seconds = (last_leave_time - first_join_time).total_seconds()
-                total_session_hours = round(total_session_seconds / 3600, 2)
+        sessions = await db.sessions.find({
+            "user_id": user["_id"],
+            "start_time": {"$gte": day_start, "$lte": day_end},
+            "stop_time": {"$ne": None}
+        }).to_list(length=None)
+        
+        for session in sessions:
+            if session.get("start_time") and session.get("stop_time"):
+                start_time = ensure_timezone_aware(session["start_time"])
+                stop_time = ensure_timezone_aware(session["stop_time"])
+                if stop_time > start_time:
+                    duration = (stop_time - start_time).total_seconds()
+                    total_session_hours += duration
+        
+        # Convert to hours and round to 2 decimal places
+        total_session_hours = round(total_session_hours / 3600, 2)
+        total_working_hours = total_session_hours  # Use the same value for both
 
         # Get app usage
         day_str = current_date.strftime("%Y-%m-%d")
@@ -133,6 +144,7 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
             "total_idle_time": daily_summary.get("total_idle_time", 0) if daily_summary else 0,
             "total_active_time": total_active_time,
             "total_session_time": total_session_hours,
+            "total_working_hours": total_working_hours,
             "duty_start_time": duty_start_time,
             "duty_end_time": duty_end_time,
             "app_usage": app_usage,

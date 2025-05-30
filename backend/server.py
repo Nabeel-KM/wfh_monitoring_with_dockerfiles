@@ -35,7 +35,12 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB in bytes
 app.config['JSON_SORT_KEYS'] = False  # Preserve key order in JSON responses
 # Configure CORS with proper settings
-CORS(app, resources={r"/*": {"origins": "*", "allow_headers": ["Content-Type", "Authorization", "Cache-Control"]}}, supports_credentials=True)
+CORS(app, resources={r"/*": {
+    "origins": ["https://wfh.kryptomind.net"],
+    "allow_headers": ["Content-Type", "Authorization", "Cache-Control"],
+    "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    "supports_credentials": True
+}})
 
 # Configure rate limiting - high limits for multiple users
 limiter = Limiter(
@@ -1430,7 +1435,7 @@ scheduler.start()
 @app.after_request
 def add_cors_headers(response):
     """Add CORS headers to all responses"""
-    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Origin'] = 'https://wfh.kryptomind.net'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Cache-Control'
     response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
     return response
@@ -1440,7 +1445,7 @@ def add_cors_headers(response):
 def handle_options(path):
     """Handle preflight OPTIONS requests"""
     response = jsonify({'status': 'ok'})
-    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Origin'] = 'https://wfh.kryptomind.net'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,Cache-Control'
     response.headers['Access-Control-Allow-Methods'] = 'GET,PUT,POST,DELETE,OPTIONS'
     return response

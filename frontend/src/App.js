@@ -128,6 +128,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const fetchTimeoutRef = useRef(null);
   const isMountedRef = useRef(true);
+  const lastFetchTimeRef = useRef(0);
 
   const polishedTheme = createTheme({
     palette: {
@@ -185,11 +186,19 @@ function App() {
   });
 
   const fetchData = async () => {
+    // Prevent multiple simultaneous requests
     if (isLoading || !isMountedRef.current) return;
+    
+    // Debounce requests - ensure at least 1 second between requests
+    const now = Date.now();
+    if (now - lastFetchTimeRef.current < 1000) {
+      return;
+    }
+    lastFetchTimeRef.current = now;
     
     try {
       setIsLoading(true);
-      const res = await axios.get(`${API}?t=${new Date().getTime()}`, {
+      const res = await axios.get(`${API}?t=${now}`, {
         headers: { 'Cache-Control': 'no-cache' }
       });
       
@@ -215,18 +224,21 @@ function App() {
     // Initial fetch
     fetchData();
     
-    // Set up auto-refresh
+    // Set up auto-refresh with proper cleanup
     const intervalId = setInterval(() => {
       if (isMountedRef.current && !isLoading) {
         fetchData();
       }
-    }, 30000);
+    }, 30000); // 30 seconds
     
     // Cleanup function
     return () => {
       isMountedRef.current = false;
       if (intervalId) {
         clearInterval(intervalId);
+      }
+      if (fetchTimeoutRef.current) {
+        clearTimeout(fetchTimeoutRef.current);
       }
     };
   }, []); // Empty dependency array

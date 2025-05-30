@@ -56,34 +56,34 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
         print(f"🔍 Calculating session time for user {user['username']} on {current_date}")
         print(f"📅 Day range: {day_start} to {day_end}")
         
-        # Calculate total working hours by summing all sessions
-        total_session_hours = 0
-        sessions = await db.sessions.find({
+        # Get first join and last leave for today
+        first_join = await db.sessions.find_one({
             "user_id": user["_id"],
-            "start_time": {"$gte": day_start, "$lte": day_end},
-            "stop_time": {"$ne": None}
-        }).to_list(length=None)
+            "event": "joined",
+            "start_time": {"$gte": day_start, "$lte": day_end}
+        }, sort=[("start_time", 1)])
         
-        print(f"📊 Found {len(sessions)} sessions for the day")
+        last_leave = await db.sessions.find_one({
+            "user_id": user["_id"],
+            "event": "left",
+            "stop_time": {"$gte": day_start, "$lte": day_end}
+        }, sort=[("stop_time", -1)])
         
-        for session in sessions:
-            if session.get("start_time") and session.get("stop_time"):
-                start_time = ensure_timezone_aware(session["start_time"])
-                stop_time = ensure_timezone_aware(session["stop_time"])
-                if stop_time > start_time:
-                    duration = (stop_time - start_time).total_seconds()
-                    total_session_hours += duration
-                    print(f"⏱️ Session duration: {duration} seconds (from {start_time} to {stop_time})")
-                else:
-                    print(f"⚠️ Invalid session: stop_time ({stop_time}) is before start_time ({start_time})")
+        # Calculate total session time from first join to last leave
+        total_session_hours = 0
+        if first_join and last_leave and first_join.get("start_time") and last_leave.get("stop_time"):
+            first_join_time = ensure_timezone_aware(first_join["start_time"])
+            last_leave_time = ensure_timezone_aware(last_leave["stop_time"])
+            
+            if last_leave_time > first_join_time:
+                total_session_seconds = (last_leave_time - first_join_time).total_seconds()
+                total_session_hours = round(total_session_seconds / 3600, 2)
+                print(f"⏱️ Total session duration: {total_session_seconds} seconds (from {first_join_time} to {last_leave_time})")
             else:
-                print(f"⚠️ Session missing start_time or stop_time: {session}")
-        
-        # Convert to hours and round to 2 decimal places
-        total_session_hours = round(total_session_hours / 3600, 2)
-        total_working_hours = total_session_hours  # Use the same value for both
+                print(f"⚠️ Warning: Last leave time ({last_leave_time}) is before first join time ({first_join_time})")
         
         print(f"📊 Total session hours: {total_session_hours}")
+        total_working_hours = total_session_hours  # Use the same value for both
 
         # Get app usage
         day_str = current_date.strftime("%Y-%m-%d")

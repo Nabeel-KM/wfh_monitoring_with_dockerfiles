@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..services.mongodb import get_database
 from ..models.database import Activity
@@ -9,11 +9,22 @@ from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
 router = APIRouter()
 
+class SystemInfo(BaseModel):
+    platform: str
+    version: str
+    hostname: str
+
 class ActivityData(BaseModel):
     username: str
-    active_app: str
-    active_apps: List[str]
-    timestamp: Optional[datetime] = None
+    display_name: Optional[str] = None
+    apps: Optional[Dict[str, float]] = Field(default_factory=dict)
+    app_usage: Optional[Dict[str, float]] = Field(default_factory=dict)
+    timestamp: Optional[str] = None
+    date: Optional[str] = None
+    app_sync_info: Optional[Dict[str, str]] = Field(default_factory=dict)
+    idle_time: Optional[int] = 0
+    total_active_time: Optional[float] = 0
+    system_info: Optional[SystemInfo] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -27,53 +38,82 @@ async def track_activity(data: ActivityData):
             
         users = db.users
         activities = db.activities
-        sessions = db.sessions
+        daily_summaries = db.daily_summaries
         
         # Get user
         user = await users.find_one({"username": data.username})
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # Ensure timestamp is timezone-aware
-        timestamp = ensure_timezone_aware(data.timestamp or datetime.now(timezone.utc))
+        # Use current date if not provided
+        current_date = data.date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
-        # Get current session
-        session = await sessions.find_one(
-            {"user_id": user["_id"]},
-            sort=[("timestamp", -1)]
-        )
+        # Use apps field if available, fall back to app_usage
+        app_usage = data.apps or data.app_usage or {}
         
-        if not session:
-            raise HTTPException(status_code=400, detail="No active session found")
+        # Normalize app names
+        normalized_app_usage = normalize_app_names(app_usage)
         
-        # Create activity record
-        activity = {
-            "user_id": user["_id"],
-            "session_id": session["_id"],
-            "active_app": data.active_app,
-            "active_apps": data.active_apps,
-            "timestamp": timestamp
+        now_utc = datetime.now(timezone.utc)
+        
+        # Update activities collection
+        for app_name, duration in normalized_app_usage.items():
+            sync_ts = data.app_sync_info.get(app_name, data.timestamp)
+            
+            # Check for existing activity
+            activity_doc = await activities.find_one({
+                "user_id": user["_id"],
+                "app_name": app_name,
+                "date": current_date
+            })
+            
+            last_sync = activity_doc.get("last_sync", "") if activity_doc else ""
+            
+            if not last_sync or sync_ts > last_sync:
+                await activities.update_one(
+                    {
+                        "user_id": user["_id"],
+                        "app_name": app_name,
+                        "date": current_date
+                    },
+                    {
+                        "$inc": {"total_time": duration},
+                        "$set": {
+                            "last_updated": now_utc,
+                            "username": user['username'],
+                            "last_sync": sync_ts
+                        }
+                    },
+                    upsert=True
+                )
+        
+        # Update daily summary
+        total_time = sum(app_usage.values())
+        
+        update_data = {
+            "$inc": {
+                "total_active_time": total_time,
+                "total_idle_time": data.idle_time
+            },
+            "$set": {
+                "last_updated": now_utc,
+                "username": user['username']
+            }
         }
         
-        await activities.insert_one(activity)
-        
-        # Update session with current activity
-        await sessions.update_one(
-            {"_id": session["_id"]},
+        await daily_summaries.update_one(
             {
-                "$set": {
-                    "active_app": data.active_app,
-                    "active_apps": data.active_apps,
-                    "last_activity": timestamp
-                }
-            }
+                "user_id": user["_id"],
+                "date": current_date
+            },
+            update_data,
+            upsert=True
         )
         
         return {
             "status": "success",
             "username": data.username,
-            "active_app": data.active_app,
-            "timestamp": timestamp.isoformat()
+            "timestamp": now_utc.isoformat()
         }
         
     except HTTPException:

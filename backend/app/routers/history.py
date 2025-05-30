@@ -3,7 +3,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 
-from ..services.mongodb import get_database, get_collections
+from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
 router = APIRouter()
@@ -19,11 +19,14 @@ class HistoryData(BaseModel):
 async def get_history(username: str, days: int = 7):
     """Get user history for the specified number of days."""
     try:
-        collections = await get_collections()
-        users = collections["users"]
-        sessions = collections["sessions"]
-        activities = collections["activities"]
-        daily_summaries = collections["daily_summaries"]
+        db = await get_database()
+        if db is None:
+            raise HTTPException(status_code=500, detail="Database connection not available")
+            
+        users = db.users
+        sessions = db.sessions
+        activities = db.activities
+        daily_summaries = db.daily_summaries
         
         # Get user
         user = await users.find_one({"username": username})

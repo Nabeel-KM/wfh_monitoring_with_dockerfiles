@@ -1,13 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import time
-import logging
-from datetime import datetime, timezone
-
-from .core.logging_config import setup_logging, log_request, log_error
-from .core.background_tasks import setup_background_tasks
+from .core.scheduler import setup_scheduler
 from .services.mongodb import connect_to_mongodb, close_mongodb_connection
 from .routers import (
     health,
@@ -18,9 +12,19 @@ from .routers import (
     metrics,
     history
 )
+import logging
+import time
+from datetime import datetime, timezone
 
-# Setup logging
-setup_logging()
+from .core.logging_config import setup_logging, log_request, log_error
+from .core.background_tasks import setup_background_tasks
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
@@ -95,20 +99,24 @@ app.include_router(screenshots.router, prefix="/api", tags=["Screenshots"])
 app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
 app.include_router(history.router, prefix="/api", tags=["History"])
 
-# Initialize scheduler
-scheduler = AsyncIOScheduler()
-
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
-    # Connect to MongoDB
-    if not await connect_to_mongodb():
-        logger.error("Failed to connect to MongoDB")
-        raise Exception("Database connection failed")
+    try:
+        # Connect to MongoDB
+        if not await connect_to_mongodb():
+            logger.error("Failed to connect to MongoDB")
+            raise Exception("Database connection failed")
+        
+        # Set up and start the scheduler
+        scheduler = setup_scheduler()
+        scheduler.start()
+        logger.info("✅ Scheduler started successfully")
+    except Exception as e:
+        logger.error(f"❌ Error starting scheduler: {e}")
     
     # Setup background tasks
     setup_background_tasks(scheduler)
-    scheduler.start()
     
     # Store start time for uptime calculation
     app.start_time = time.time()
@@ -117,11 +125,21 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown."""
-    # Stop scheduler
-    scheduler.shutdown()
+    """Clean up resources on shutdown."""
+    try:
+        # Shutdown scheduler
+        scheduler = setup_scheduler()
+        scheduler.shutdown()
+        logger.info("✅ Scheduler shut down successfully")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down scheduler: {e}")
     
     # Close MongoDB connection
     await close_mongodb_connection()
     
-    logger.info("Application shutdown complete") 
+    logger.info("Application shutdown complete")
+
+@app.get("/")
+async def root():
+    """Root endpoint for health check."""
+    return {"status": "ok", "message": "WFH Monitoring API is running"} 

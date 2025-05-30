@@ -3,38 +3,72 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, ConfigDict
 import asyncio
+from bson import ObjectId
 
 from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names, serialize_mongodb_doc
 
 router = APIRouter()
 
-class DailyData(BaseModel):
-    date: str
-    first_activity: Optional[str]
-    last_activity: Optional[str]
-    total_session_time: float
-    total_active_time: float
-    total_idle_time: float
-    app_usage: List[Dict[str, Any]]
-    most_used_app: Optional[str]
-    most_used_app_time: float
+class DailyData:
+    def __init__(
+        self,
+        date: str,
+        first_activity: Optional[str] = None,
+        last_activity: Optional[str] = None,
+        total_session_time: float = 0,
+        total_active_time: float = 0,
+        total_idle_time: float = 0,
+        app_usage: List[dict] = None,
+        most_used_app: Optional[str] = None,
+        most_used_app_time: float = 0
+    ):
+        self.date = date
+        self.first_activity = first_activity
+        self.last_activity = last_activity
+        self.total_session_time = total_session_time
+        self.total_active_time = total_active_time
+        self.total_idle_time = total_idle_time
+        self.app_usage = app_usage or []
+        self.most_used_app = most_used_app
+        self.most_used_app_time = most_used_app_time
 
-class HistoryData(BaseModel):
-    username: str
-    display_name: str
-    days: List[DailyData]
+    def dict(self):
+        return {
+            "date": self.date,
+            "first_activity": self.first_activity,
+            "last_activity": self.last_activity,
+            "total_session_time": self.total_session_time,
+            "total_active_time": self.total_active_time,
+            "total_idle_time": self.total_idle_time,
+            "app_usage": self.app_usage,
+            "most_used_app": self.most_used_app,
+            "most_used_app_time": self.most_used_app_time
+        }
 
-    model_config = ConfigDict(from_attributes=True)
+class HistoryData:
+    def __init__(self, username: str, display_name: str, days: List[DailyData]):
+        self.username = username
+        self.display_name = display_name
+        self.days = days
 
-async def get_session_data(user_id: str, day_str: str, sessions_data: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def dict(self):
+        return {
+            "username": self.username,
+            "display_name": self.display_name,
+            "days": [day.dict() for day in self.days]
+        }
+
+async def get_session_data(user_id: ObjectId, day_str: str, sessions_data: List[dict]) -> Optional[dict]:
     """Get session data for a specific day"""
     return next((s for s in sessions_data if s["_id"]["user_id"] == user_id and s["_id"]["date"] == day_str), None)
 
-async def get_daily_data(user_id: str, day_str: str, session_data: Optional[Dict[str, Any]], db) -> Dict[str, Any]:
-    """Get daily data for a user"""
+async def get_daily_data(user_id: ObjectId, day_str: str, session_data: Optional[dict]) -> DailyData:
+    """Get daily activity data for a user"""
     try:
-        # Get first join and last leave times
+        db = get_database()
+        
+        # Get session times
         first_join_time = None
         last_leave_time = None
         total_session_hours = 0
@@ -44,78 +78,78 @@ async def get_daily_data(user_id: str, day_str: str, session_data: Optional[Dict
             last_leave_time = session_data.get("last_leave")
             
             if first_join_time and last_leave_time:
-                first_join_time = ensure_timezone_aware(first_join_time)
-                last_leave_time = ensure_timezone_aware(last_leave_time)
+                first_join_time = first_join_time.replace(tzinfo=timezone.utc)
+                last_leave_time = last_leave_time.replace(tzinfo=timezone.utc)
                 
                 if last_leave_time > first_join_time:
                     total_session_seconds = (last_leave_time - first_join_time).total_seconds()
                     total_session_hours = round(total_session_seconds / 3600, 2)
-
+        
         # Get activities
         activities = await db.activities.find({
             "user_id": user_id,
             "date": day_str
         }).to_list(length=None)
-
+        
         # Process app usage
-        app_usage = [
-            {"app_name": a["app_name"], "total_time": max(a.get("total_time", 0), 0)}
-            for a in activities
-        ] if activities else []
-
-        # Get most active app
+        app_usage = []
         most_active_app = None
         most_used_app_time = 0
-        if app_usage:
-            most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0))
-            most_used_app = most_active_app.get("app_name")
-            most_used_app_time = round(most_active_app.get("total_time", 0), 2)
-
+        
+        if activities:
+            app_usage = [
+                {
+                    "app_name": a["app_name"],
+                    "total_time": round(a.get("total_time", 0) / 60, 2)  # Convert minutes to hours
+                }
+                for a in activities
+            ]
+            
+            # Sort by total time
+            app_usage.sort(key=lambda x: x["total_time"], reverse=True)
+            
+            if app_usage:
+                most_active_app = app_usage[0]["app_name"]
+                most_used_app_time = app_usage[0]["total_time"]
+        
         # Get daily summary
         daily_summary = await db.daily_summaries.find_one({
             "user_id": user_id,
             "date": day_str
         })
-
-        # Format timestamps
-        first_activity = first_join_time.isoformat() if first_join_time else None
-        last_activity = last_leave_time.isoformat() if last_leave_time else None
-
-        # Calculate active time
-        active_time = 0
-        if daily_summary and "total_active_time" in daily_summary:
-            active_time = round(daily_summary.get("total_active_time", 0) / 60, 2)  # Convert minutes to hours
-
-        # Calculate idle time
-        idle_time = 0
-        if daily_summary and "total_idle_time" in daily_summary:
-            idle_time = round(daily_summary.get("total_idle_time", 0) / 60, 2)  # Convert minutes to hours
-
-        return {
-            "date": day_str,
-            "first_activity": first_activity,
-            "last_activity": last_activity,
-            "total_session_time": total_session_hours,
-            "total_active_time": active_time,
-            "total_idle_time": idle_time,
-            "app_usage": app_usage,
-            "most_used_app": most_used_app,
-            "most_used_app_time": most_used_app_time
-        }
+        
+        # Calculate active and idle time
+        total_active_time = 0
+        total_idle_time = 0
+        
+        if daily_summary:
+            total_active_time = round(daily_summary.get("total_active_time", 0) / 60, 2)  # Convert minutes to hours
+            total_idle_time = round(daily_summary.get("total_idle_time", 0) / 60, 2)  # Convert minutes to hours
+        
+        return DailyData(
+            date=day_str,
+            first_activity=first_join_time.isoformat() if first_join_time else None,
+            last_activity=last_leave_time.isoformat() if last_leave_time else None,
+            total_session_time=total_session_hours,
+            total_active_time=total_active_time,
+            total_idle_time=total_idle_time,
+            app_usage=app_usage,
+            most_used_app=most_active_app,
+            most_used_app_time=most_used_app_time
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error getting daily data: {e}")
+        return DailyData(date=day_str)
 
-@router.get("/history", response_model=List[HistoryData])
+@router.get("/history")
 async def get_history(
     username: Optional[str] = None,
-    days: int = Query(30, ge=1, le=365)
+    days: int = Query(30, ge=1, le=90)
 ):
     """Get user history data"""
     try:
-        db = await get_database()
-        if db is None:
-            raise HTTPException(status_code=500, detail="Database connection not available")
-
+        db = get_database()
+        
         # Get users
         if username:
             user = await db.users.find_one({"username": username})
@@ -124,59 +158,67 @@ async def get_history(
             users = [user]
         else:
             users = await db.users.find().to_list(length=None)
-
+        
         if not users:
-            raise HTTPException(status_code=404, detail="No users found")
-
+            return []
+        
         # Calculate date range
         end_date = datetime.now(timezone.utc).date()
         start_date = end_date - timedelta(days=days-1)
-
+        
         # Get sessions data
+        start_datetime = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+        end_datetime = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+        
         pipeline = [
-            {"$match": {
-                "user_id": {"$in": [user["_id"] for user in users]},
-                "$or": [
-                    {"start_time": {"$gte": start_date, "$lte": end_date}},
-                    {"stop_time": {"$gte": start_date, "$lte": end_date}}
-                ]
-            }},
-            {"$sort": {"start_time": 1}},
-            {"$group": {
-                "_id": {
-                    "user_id": "$user_id",
-                    "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$start_time"}}
-                },
-                "first_join": {"$first": "$start_time"},
-                "last_leave": {"$last": "$stop_time"}
-            }}
+            {
+                "$match": {
+                    "user_id": {"$in": [user["_id"] for user in users]},
+                    "$or": [
+                        {"start_time": {"$gte": start_datetime, "$lte": end_datetime}},
+                        {"stop_time": {"$gte": start_datetime, "$lte": end_datetime}}
+                    ]
+                }
+            },
+            {
+                "$sort": {"start_time": 1}
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "user_id": "$user_id",
+                        "date": {"$dateToString": {"format": "%Y-%m-%d", "date": "$start_time"}}
+                    },
+                    "first_join": {"$first": "$start_time"},
+                    "last_leave": {"$last": "$stop_time"}
+                }
+            }
         ]
+        
         sessions_data = await db.sessions.aggregate(pipeline).to_list(length=None)
-
-        # Process user history
+        
+        # Process history for each user
         history_data = []
         for user in users:
-            try:
-                user_history = {
-                    "username": user["username"],
-                    "display_name": user.get("display_name", user["username"]),
-                    "days": []
-                }
-
-                for i in range(days):
-                    day = start_date + timedelta(days=i)
-                    day_str = day.strftime("%Y-%m-%d")
-                    session_data = await get_session_data(user["_id"], day_str, sessions_data)
-                    daily_data = await get_daily_data(user["_id"], day_str, session_data, db)
-                    user_history["days"].append(daily_data)
-
-                history_data.append(user_history)
-            except Exception as e:
-                # Log error but continue processing other users
-                print(f"Error processing history for user {user.get('username')}: {e}")
-                continue
-
-        return history_data
+            days_data = []
+            for i in range(days):
+                current_date = start_date + timedelta(days=i)
+                day_str = current_date.strftime("%Y-%m-%d")
+                
+                session_data = await get_session_data(user["_id"], day_str, sessions_data)
+                daily_data = await get_daily_data(user["_id"], day_str, session_data)
+                days_data.append(daily_data)
+            
+            history_data.append(HistoryData(
+                username=user["username"],
+                display_name=user.get("display_name", user["username"]),
+                days=days_data
+            ))
+        
+        return [data.dict() for data in history_data]
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

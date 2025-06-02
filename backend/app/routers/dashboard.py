@@ -59,13 +59,11 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
         # Get first join and last leave for today
         first_join = await db.sessions.find_one({
             "user_id": user["_id"],
-            "event": "joined",
             "start_time": {"$gte": day_start, "$lte": day_end}
         }, sort=[("start_time", 1)])
         
         last_leave = await db.sessions.find_one({
             "user_id": user["_id"],
-            "event": "left",
             "stop_time": {"$gte": day_start, "$lte": day_end}
         }, sort=[("stop_time", -1)])
         
@@ -78,7 +76,7 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
             if last_leave_time > first_join_time:
                 total_session_seconds = (last_leave_time - first_join_time).total_seconds()
                 total_session_hours = round(total_session_seconds / 3600, 2)
-                print(f"⏱️ Total session duration: {total_session_seconds} seconds (from {first_join_time} to {last_leave_time})")
+                print(f"⏱️ Total session duration: {total_session_hours} hours (from {first_join_time} to {last_leave_time})")
             else:
                 print(f"⚠️ Warning: Last leave time ({last_leave_time}) is before first join time ({first_join_time})")
         

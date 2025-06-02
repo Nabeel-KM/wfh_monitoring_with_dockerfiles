@@ -132,6 +132,7 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
             end_time_dt = ensure_timezone_aware(last_leave.get("stop_time"))
             duty_end_time = end_time_dt.isoformat()
 
+        # Always return user data, even if they're not online
         return {
             "username": user["username"],
             "display_name": user.get("display_name", user["username"]),
@@ -153,7 +154,27 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
         }
     except Exception as e:
         print(f"❌ Error in get_user_dashboard_data: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Return minimal data for the user even if there's an error
+        return {
+            "username": user.get("username", "unknown"),
+            "display_name": user.get("display_name", user.get("username", "unknown")),
+            "error": str(e),
+            "screen_shared": False,
+            "channel": None,
+            "timestamp": None,
+            "active_app": None,
+            "active_apps": [],
+            "screen_share_time": 0,
+            "total_idle_time": 0,
+            "total_active_time": 0,
+            "total_session_time": 0,
+            "total_working_hours": 0,
+            "duty_start_time": None,
+            "duty_end_time": None,
+            "app_usage": [],
+            "most_used_app": None,
+            "most_used_app_time": 0
+        }
 
 @router.get("/dashboard", response_model=DashboardResponse)
 async def get_dashboard(

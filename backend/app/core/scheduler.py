@@ -4,8 +4,13 @@ from apscheduler.triggers.interval import IntervalTrigger
 from datetime import datetime, timezone, timedelta
 from ..services.mongodb import get_database
 import logging
+from apscheduler.jobstores.memory import MemoryJobStore
+from apscheduler.executors.pool import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
+
+# Global scheduler instance
+_scheduler = None
 
 async def update_screen_share_time():
     """Update screen share time for active sessions."""
@@ -169,39 +174,31 @@ async def cleanup_old_data():
     except Exception as e:
         logger.error(f"❌ Error during old data cleanup: {e}")
 
-def setup_scheduler():
-    """Set up the scheduler with all tasks."""
-    scheduler = AsyncIOScheduler()
-
-    # Add jobs
-    scheduler.add_job(
-        update_screen_share_time,
-        IntervalTrigger(minutes=5),
-        id='update_screen_share_time'
-    )
-
-    scheduler.add_job(
-        reset_screen_share_time,
-        CronTrigger(hour=0, minute=0),
-        id='reset_screen_share_time'
-    )
-
-    scheduler.add_job(
-        clean_expired_cache,
-        IntervalTrigger(minutes=15),
-        id='clean_expired_cache'
-    )
-
-    scheduler.add_job(
-        optimize_database,
-        CronTrigger(day_of_week='sun', hour=2),
-        id='optimize_database'
-    )
-
-    scheduler.add_job(
-        cleanup_old_data,
-        CronTrigger(day_of_week='mon', hour=1),
-        id='cleanup_old_data'
-    )
-
-    return scheduler 
+def setup_scheduler() -> AsyncIOScheduler:
+    """Setup and return the scheduler instance."""
+    global _scheduler
+    
+    if _scheduler is None:
+        # Configure job stores and executors
+        jobstores = {
+            'default': MemoryJobStore()
+        }
+        executors = {
+            'default': ThreadPoolExecutor(20)
+        }
+        job_defaults = {
+            'coalesce': False,
+            'max_instances': 1
+        }
+        
+        # Create scheduler instance
+        _scheduler = AsyncIOScheduler(
+            jobstores=jobstores,
+            executors=executors,
+            job_defaults=job_defaults,
+            timezone='UTC'
+        )
+        
+        logger.info("Scheduler instance created")
+    
+    return _scheduler 

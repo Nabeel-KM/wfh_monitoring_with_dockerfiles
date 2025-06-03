@@ -119,15 +119,16 @@ async def startup_event():
             logger.error("Failed to connect to MongoDB")
             raise Exception("Database connection failed")
         
-        # Set up and start the scheduler
+        # Set up and start the scheduler only if it's not already running
         scheduler = setup_scheduler()
-        scheduler.start()
-        logger.info("✅ Scheduler started successfully")
+        if not scheduler.running:
+            scheduler.start()
+            logger.info("✅ Scheduler started successfully")
+            
+            # Setup background tasks only if scheduler is newly started
+            setup_background_tasks(scheduler)
     except Exception as e:
         logger.error(f"❌ Error starting scheduler: {e}")
-    
-    # Setup background tasks
-    setup_background_tasks(scheduler)
     
     # Store start time for uptime calculation
     app.start_time = time.time()
@@ -140,8 +141,9 @@ async def shutdown_event():
     try:
         # Shutdown scheduler
         scheduler = setup_scheduler()
-        scheduler.shutdown()
-        logger.info("✅ Scheduler shut down successfully")
+        if scheduler.running:
+            scheduler.shutdown()
+            logger.info("✅ Scheduler shut down successfully")
     except Exception as e:
         logger.error(f"❌ Error shutting down scheduler: {e}")
     

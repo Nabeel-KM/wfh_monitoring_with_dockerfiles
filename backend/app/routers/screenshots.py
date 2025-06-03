@@ -5,6 +5,11 @@ from pydantic import BaseModel, ConfigDict
 import boto3
 import os
 from botocore.exceptions import ClientError
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi.responses import JSONResponse
+from datetime import datetime, timezone
+import hashlib
+
 
 from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware
@@ -56,7 +61,7 @@ async def list_screenshots(username: str, date: str):
 
         # Initialize S3 client
         s3_client = get_s3_client()
-        S3_BUCKET = os.getenv('S3_BUCKET', 'km-wfh-monitoring-bucket')
+        S3_BUCKET = os.getenv('S3_BUCKET_NAME', 'km-wfh-monitoring-bucket')
         
         # List objects in the S3 folder
         prefix = f"{username}/{date}/"
@@ -108,7 +113,6 @@ async def list_screenshots(username: str, date: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/screenshots/upload")
-
 async def upload_screenshot(
     screenshot: UploadFile = File(...),
     username: str = Form(...),
@@ -127,6 +131,10 @@ async def upload_screenshot(
         
         # Generate S3 filename
         filename = f"{username}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{timestamp}_{hash[:8]}.jpg"
+        
+        # Initialize S3 client
+        s3_client = get_s3_client()
+        S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'km-wfh-monitoring-bucket')
         
         # Upload to S3
         s3_client.put_object(

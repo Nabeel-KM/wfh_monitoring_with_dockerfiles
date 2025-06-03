@@ -12,10 +12,10 @@ services:
     restart: always
     environment:
       - MONGO_URI=mongodb://mongodb:27017/wfh_monitoring  # Updated to use MongoDB
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-AKIAXNGUVRA3FXBGECNN}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-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}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
       - AWS_REGION=${AWS_REGION:-us-east-1}
-      - S3_BUCKET=${S3_BUCKET:-km-wfh-monitoring-bucket}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME:-km-wfh-monitoring-bucket}
 #    volumes:
 #      - ./backend/migrations:/app/migrations  # Bind mount for migrations
 

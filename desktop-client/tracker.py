@@ -54,18 +54,14 @@ API = os.getenv('API_URL', 'https://api-wfh.kryptomind.net/api/activity')
 SESSION_STATUS_API = os.getenv('SESSION_STATUS_API', 'https://api-wfh.kryptomind.net/api/session_status')
 USER = os.getenv('USER_ID', 'default_user')
 IDLE_THRESHOLD = int(os.getenv('IDLE_THRESHOLD', '300'))  # 5 minutes
-SYNC_INTERVAL = int(os.getenv('SYNC_INTERVAL', '1800'))  # 30 minutes
+SYNC_INTERVAL = int(os.getenv('SYNC_INTERVAL', '300'))  # 5 minutes
 LOG_INTERVAL = int(os.getenv('LOG_INTERVAL', '60'))  # 1 minute
 STATUS_CHECK_INTERVAL = int(os.getenv('STATUS_CHECK_INTERVAL', '30'))  # 30 seconds
 SECONDS_TO_MINUTES = 60
 SECONDS_TO_HOURS = 3600
 
 # S3 Configuration
-S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
-AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY')
-AWS_SECRET_KEY = os.getenv('AWS_SECRET_KEY')
-AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
-SCREENSHOT_INTERVAL = int(os.getenv('SCREENSHOT_INTERVAL', '1800'))  # 30 minutes in seconds
+SCREENSHOT_INTERVAL = int(os.getenv('SCREENSHOT_INTERVAL', '300'))  # 5 minutes
 
 # Global variables
 last_input = time.time()
@@ -730,201 +726,104 @@ def check_session_status():
 
 
 def initialize_s3_client():
-    """Initialize and return an S3 client if credentials are available"""
-    if not all([AWS_ACCESS_KEY, AWS_SECRET_KEY, S3_BUCKET_NAME]):
-        log_message("⚠️ S3 credentials not configured. Screenshot uploads will be disabled.")
-        return None
-        
-    try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=AWS_ACCESS_KEY,
-            aws_secret_access_key=AWS_SECRET_KEY,
-            region_name=AWS_REGION
-        )
-        log_message("✅ S3 client initialized successfully")
-        return s3_client
-    except Exception as e:
-        log_message(f"❌ Error initializing S3 client: {str(e)}")
-        return None
+    """Initialize S3 client - No longer needed as we use FastAPI backend"""
+    return None
 
 
 def take_screenshot():
-    """Capture screenshot and return as bytes"""
+    """Capture a screenshot and return it as bytes"""
     try:
-        log_message("📸 Taking screenshot...")
+        # Capture screenshot
+        screenshot = ImageGrab.grab()
         
-        # Platform-specific screenshot handling
-        if IS_LINUX:
-            # On Linux, ImageGrab might require additional setup with Xlib
-            try:
-                screenshot = ImageGrab.grab()
-            except Exception as e:
-                log_message(f"⚠️ Linux screenshot error: {e}")
-                # Alternative method could be implemented here if needed
-                return None
-        else:
-            # Windows and macOS should work with PIL.ImageGrab
-            screenshot = ImageGrab.grab()
-            
+        # Convert to bytes with compression
         img_byte_arr = io.BytesIO()
-        screenshot.save(img_byte_arr, format='PNG')
+        screenshot.save(img_byte_arr, format='JPEG', quality=70)  # 70% quality for good compression
         img_byte_arr.seek(0)
-        log_message("✅ Screenshot captured successfully")
-        return img_byte_arr
+        
+        return img_byte_arr.getvalue()
     except Exception as e:
-        log_message(f"❌ Error taking screenshot: {e}")
+        log_message(f"❌ Error capturing screenshot: {e}")
         return None
 
 
-def upload_screenshot_to_s3(s3_client, screenshot_bytes):
-    """Upload screenshot to S3 bucket"""
-    try:
-        if not screenshot_bytes:
-            log_message("⚠️ No screenshot data to upload")
-            return False
+def upload_screenshot_to_backend(screenshot_bytes):
+    """Upload screenshot to backend API"""
+    if not screenshot_bytes:
+        return False
 
-        current_time = datetime.now()
-        date_folder = current_time.strftime("%Y-%m-%d")
-        time_str = current_time.strftime("%H-%M-%S")
+    try:
+        # Calculate file hash for integrity verification
+        file_hash = hashlib.sha256(screenshot_bytes).hexdigest()
         
-        # Create S3 path: bucket/username/date/screenshot-time.png
-        s3_path = f"{USER}/{date_folder}/screenshot-{time_str}.png"
+        # Generate timestamp
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         
-        log_message(f"📤 Uploading screenshot to S3: {s3_path}")
+        # Prepare the multipart form data
+        files = {
+            'screenshot': ('screenshot.jpg', screenshot_bytes, 'image/jpeg')
+        }
         
-        s3_client.upload_fileobj(
-            screenshot_bytes,
-            S3_BUCKET_NAME,
-            s3_path,
-            ExtraArgs={
-                'ContentType': 'image/png',
-                'ACL': 'private'
-            }
+        data = {
+            'username': USER,
+            'timestamp': timestamp,
+            'hash': file_hash
+        }
+        
+        # Send to backend API
+        response = requests.post(
+            f"{API}/screenshots/upload",
+            files=files,
+            data=data,
+            timeout=30
         )
         
-        log_message(f"📸 Screenshot uploaded to S3: {s3_path}")
-        return True
+        if response.status_code == 200:
+            log_message(f"✅ Screenshot uploaded successfully: {timestamp}")
+            return True
+        else:
+            log_message(f"❌ Failed to upload screenshot: {response.status_code} - {response.text}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        log_message(f"❌ Error uploading screenshot: {e}")
+        return False
     except Exception as e:
-        log_message(f"❌ Error uploading screenshot to S3: {e}")
-        log_message(f"Error details: {str(e)}")
+        log_message(f"❌ Unexpected error uploading screenshot: {e}")
         return False
 
 
-def screenshot_worker(s3_client):
-    """Worker thread to process screenshots from the queue"""
-    global running
+def screenshot_worker():
+    """Worker thread for processing screenshots"""
     while running:
         try:
-            # Get screenshot data from queue with timeout
-            try:
-                img_data = screenshot_queue.get(timeout=5)
-            except queue.Empty:
-                continue
+            # Check if it's time to take a screenshot
+            current_time = time.time()
+            if current_time - last_screenshot_time >= SCREENSHOT_INTERVAL:
+                # Take and upload screenshot
+                screenshot_bytes = take_screenshot()
+                if screenshot_bytes:
+                    upload_screenshot_to_backend(screenshot_bytes)
+                    global last_screenshot_time
+                    last_screenshot_time = current_time
                 
-            if img_data is None:
-                screenshot_queue.task_done()  # Mark None tasks as done
-                continue
-                
-            # Set a timeout for the upload operation
-            upload_timeout = 30  # 30 seconds max for upload
-            
-            def upload_task():
-                try:
-                    # Generate S3 path
-                    current_time = datetime.now()
-                    date_folder = current_time.strftime("%Y-%m-%d")
-                    time_str = current_time.strftime("%H-%M-%S")
-                    s3_path = f"{USER}/{date_folder}/screenshot-{time_str}.png"
-
-                    # Upload to S3
-                    log_message(f"📤 Uploading screenshot to: {s3_path}")
-                    s3_client.upload_fileobj(
-                        img_data,
-                        S3_BUCKET_NAME,
-                        s3_path,
-                        ExtraArgs={'ContentType': 'image/png'}
-                    )
-                    log_message("✅ Screenshot uploaded successfully")
-                    return True
-                except Exception as e:
-                    log_message(f"❌ Error uploading screenshot: {str(e)}")
-                    return False
-            
-            # Run upload in a separate thread with timeout
-            upload_thread = threading.Thread(target=upload_task)
-            upload_thread.daemon = True
-            upload_thread.start()
-            upload_thread.join(timeout=upload_timeout)
-            
-            if upload_thread.is_alive():
-                log_message("⚠️ Screenshot upload timed out")
-            
-            # Mark task as done regardless of outcome
-            screenshot_queue.task_done()
+            # Sleep for a short interval to prevent high CPU usage
+            time.sleep(10)
             
         except Exception as e:
-            log_message(f"❌ Error in screenshot worker: {str(e)}")
-            try:
-                screenshot_queue.task_done()  # Ensure task is marked as done even on error
-            except:
-                pass
-            time.sleep(1)
+            log_message(f"❌ Error in screenshot worker: {e}")
+            time.sleep(30)  # Wait longer on error
 
-def take_and_upload_screenshot(s3_client):
-    """Take screenshot and queue for upload"""
+
+def take_and_upload_screenshot():
+    """Take and upload a screenshot immediately"""
     try:
-        # Check if S3 client is available
-        if not s3_client:
-            log_message("⚠️ S3 client not available, skipping screenshot")
-            return False
-            
-        # Check if queue is getting too full
-        if screenshot_queue.qsize() >= screenshot_queue.maxsize * 0.8:
-            log_message("⚠️ Screenshot queue is at 80% capacity, monitoring memory usage")
-            # Check memory usage
-            process = psutil.Process(os.getpid())
-            memory_mb = process.memory_info().rss / 1024 / 1024
-            log_message(f"🧠 Current memory usage: {memory_mb:.2f} MB")
-            
-            # If memory usage is high, clear some items from the queue
-            if memory_mb > 200:  # 200MB threshold
-                log_message("⚠️ High memory usage detected, clearing oldest screenshots from queue")
-                try:
-                    # Remove oldest items from queue
-                    while screenshot_queue.qsize() > screenshot_queue.maxsize * 0.5:
-                        screenshot_queue.get_nowait()
-                        screenshot_queue.task_done()
-                except queue.Empty:
-                    pass
-        
-        # Always clear oldest item if queue is nearly full to prevent memory leaks
-        if screenshot_queue.qsize() >= screenshot_queue.maxsize * 0.9:
-            log_message("⚠️ Screenshot queue nearly full, clearing oldest item")
-            try:
-                screenshot_queue.get_nowait()
-                screenshot_queue.task_done()
-            except queue.Empty:
-                pass
-            
-        # Take screenshot
-        log_message("📸 Taking screenshot...")
-        screenshot = ImageGrab.grab()
-        img_byte_arr = io.BytesIO()
-        screenshot.save(img_byte_arr, format='PNG', optimize=True, quality=85)  # Optimize image
-        img_byte_arr.seek(0)
-
-        # Add to queue for processing by worker thread
-        try:
-            screenshot_queue.put_nowait(img_byte_arr)
-            log_message("✅ Screenshot queued for upload")
-            return True
-        except queue.Full:
-            log_message("⚠️ Screenshot queue full, skipping")
-            return False
-            
+        screenshot_bytes = take_screenshot()
+        if screenshot_bytes:
+            return upload_screenshot_to_backend(screenshot_bytes)
+        return False
     except Exception as e:
-        log_message(f"❌ Error taking screenshot: {str(e)}")
+        log_message(f"❌ Error in take_and_upload_screenshot: {e}")
         return False
 
 
@@ -1004,24 +903,10 @@ def main_loop():
         
     log_message("🔄 Initializing tracking state - waiting for user to join channel")
     
-    # Initialize S3 client with retry
-    retry_count = 0
-    s3_client = None
-    while retry_count < 3 and not s3_client and running:
-        s3_client = initialize_s3_client()
-        if not s3_client:
-            retry_count += 1
-            log_message(f"⚠️ Retrying S3 client initialization ({retry_count}/3)...")
-            time.sleep(5)
-    
-    if not s3_client:
-        log_message("❌ Screenshot functionality disabled - S3 client initialization failed")
-    else:
-        log_message("✅ Screenshot functionality enabled")
-        # Start screenshot worker thread
-        screenshot_thread = threading.Thread(target=screenshot_worker, args=(s3_client,), daemon=True)
-        screenshot_thread.start()
-        log_message("✅ Screenshot worker thread started")
+    # Start screenshot worker thread
+    screenshot_thread = threading.Thread(target=screenshot_worker, daemon=True)
+    screenshot_thread.start()
+    log_message("✅ Screenshot worker thread started")
     
     last_screenshot_time = time.time()
     
@@ -1054,9 +939,9 @@ def main_loop():
             # Screenshot handling with detailed logging
             if now - last_screenshot_time >= SCREENSHOT_INTERVAL:
                 log_message(f"⏰ Screenshot interval reached ({SCREENSHOT_INTERVAL} seconds)")
-                if tracking_enabled and s3_client:
+                if tracking_enabled:
                     log_message("📸 Taking screenshot (tracking enabled)")
-                    if take_and_upload_screenshot(s3_client):
+                    if take_and_upload_screenshot():
                         last_screenshot_time = now
                         log_message(f"⏱️ Next screenshot in {SCREENSHOT_INTERVAL/60} minutes")
                     else:

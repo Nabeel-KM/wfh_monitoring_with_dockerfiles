@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 async def update_screen_share_time():
     """Update screen share time for active sessions."""
     try:
-        collections = get_collections()
+        logger.info("⏰ Running incremental screen share time update...")
+        collections = await get_collections()
         sessions = collections["sessions"]
         
         # Find active screen sharing sessions
@@ -31,12 +32,12 @@ async def update_screen_share_time():
                 )
                 logger.info(f"Updated screen share time for session {session['_id']}: +{elapsed_time}s")
     except Exception as e:
-        logger.error(f"Error updating screen share time: {e}")
+        logger.error(f"❌ Error during incremental screen share time update: {e}")
 
 async def reset_screen_share_time():
     """Reset screen share time at midnight UTC."""
     try:
-        collections = get_collections()
+        collections = await get_collections()
         sessions = collections["sessions"]
         daily_summaries = collections["daily_summaries"]
         
@@ -69,7 +70,7 @@ async def reset_screen_share_time():
             
             logger.info(f"Reset screen share time for session {session['_id']}")
     except Exception as e:
-        logger.error(f"Error resetting screen share time: {e}")
+        logger.error(f"❌ Error resetting screen share time: {e}")
 
 async def clean_expired_cache():
     """Clean up expired cache items."""
@@ -77,12 +78,15 @@ async def clean_expired_cache():
         # Implement cache cleanup logic here
         logger.info("Cache cleanup completed")
     except Exception as e:
-        logger.error(f"Error cleaning cache: {e}")
+        logger.error(f"❌ Error cleaning cache: {e}")
 
 async def optimize_database():
     """Perform database maintenance tasks."""
     try:
-        db = get_database()
+        db = await get_database()
+        if db is None:
+            logger.error("❌ Database connection not available")
+            return
         
         # Remove old sessions (older than 30 days)
         thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
@@ -99,7 +103,7 @@ async def optimize_database():
         except Exception as e:
             logger.warning(f"Database compaction skipped: {e}")
     except Exception as e:
-        logger.error(f"Error optimizing database: {e}")
+        logger.error(f"❌ Error optimizing database: {e}")
 
 async def monitor_memory_usage():
     """Monitor server memory usage."""
@@ -115,12 +119,16 @@ async def monitor_memory_usage():
         if memory_mb > 1000:
             logger.critical(f"CRITICAL: Memory usage very high: {memory_mb:.2f} MB")
     except Exception as e:
-        logger.error(f"Error monitoring memory: {e}")
+        logger.error(f"❌ Error monitoring memory: {e}")
 
 async def monitor_db_connection_pool():
     """Monitor MongoDB connection pool usage."""
     try:
-        db = get_database()
+        db = await get_database()
+        if db is None:
+            logger.error("❌ Database connection not available")
+            return
+            
         server_status = await db.command("serverStatus")
         conn_stats = server_status.get("connections", {})
         
@@ -136,24 +144,24 @@ async def monitor_db_connection_pool():
         if usage_percent > 95:
             logger.critical(f"CRITICAL: MongoDB connection pool almost exhausted: {usage_percent:.1f}% used")
     except Exception as e:
-        logger.error(f"Error monitoring connection pool: {e}")
+        logger.error(f"❌ Error monitoring connection pool: {e}")
 
 def setup_background_tasks(scheduler: AsyncIOScheduler):
     """Setup all background tasks."""
     # Update screen share time every 5 minutes
-    scheduler.add_job(update_screen_share_time, 'interval', minutes=5)
+    scheduler.add_job(update_screen_share_time, 'interval', minutes=5, id='update_screen_share_time')
     
     # Reset screen share time at midnight UTC
-    scheduler.add_job(reset_screen_share_time, 'cron', hour=0, minute=0)
+    scheduler.add_job(reset_screen_share_time, 'cron', hour=0, minute=0, id='reset_screen_share_time')
     
     # Clean cache every 15 minutes
-    scheduler.add_job(clean_expired_cache, 'interval', minutes=15)
+    scheduler.add_job(clean_expired_cache, 'interval', minutes=15, id='clean_expired_cache')
     
     # Optimize database weekly on Sunday at 2 AM
-    scheduler.add_job(optimize_database, 'cron', day_of_week='sun', hour=2)
+    scheduler.add_job(optimize_database, 'cron', day_of_week='sun', hour=2, id='optimize_database')
     
     # Monitor memory usage every 10 minutes
-    scheduler.add_job(monitor_memory_usage, 'interval', minutes=10)
+    scheduler.add_job(monitor_memory_usage, 'interval', minutes=10, id='monitor_memory_usage')
     
     # Monitor DB connection pool every 5 minutes
-    scheduler.add_job(monitor_db_connection_pool, 'interval', minutes=5) 
+    scheduler.add_job(monitor_db_connection_pool, 'interval', minutes=5, id='monitor_db_connection_pool') 

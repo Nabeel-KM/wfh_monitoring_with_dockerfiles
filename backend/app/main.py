@@ -100,15 +100,15 @@ async def error_handling(request: Request, call_next):
         log_error(request.url.path, e)
         raise
 
-# Include routers
-app.include_router(health.router, prefix="/api", tags=["Health"])
-app.include_router(session.router, prefix="/api", tags=["Session"])
-app.include_router(activity.router, prefix="/api", tags=["Activity"])
-app.include_router(dashboard.router, prefix="/api", tags=["Dashboard"])
-app.include_router(screenshots.router, prefix="/api", tags=["Screenshots"])
-app.include_router(metrics.router, prefix="/api", tags=["Metrics"])
-app.include_router(history.router, prefix="/api", tags=["History"])
-app.include_router(users.router, prefix="/api", tags=["Users"])
+# Include routers with proper prefixes
+app.include_router(health.router, prefix="/api/health", tags=["Health"])
+app.include_router(session.router, prefix="/api/session", tags=["Session"])
+app.include_router(activity.router, prefix="/api/activity", tags=["Activity"])
+app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
+app.include_router(screenshots.router, prefix="/api/screenshots", tags=["Screenshots"])
+app.include_router(metrics.router, prefix="/api/metrics", tags=["Metrics"])
+app.include_router(history.router, prefix="/api/history", tags=["History"])
+app.include_router(users.router, prefix="/api/users", tags=["Users"])
 
 @app.on_event("startup")
 async def startup_event():
@@ -152,7 +152,7 @@ async def shutdown_event():
     
     logger.info("Application shutdown complete")
 
-@app.get("/")
+@app.get("/api")
 async def root():
     """Root endpoint for health check."""
     return {"status": "ok", "message": "WFH Monitoring API is running"} 

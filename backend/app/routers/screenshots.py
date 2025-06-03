@@ -12,7 +12,7 @@ from ..services.mongodb import get_database
 from ..utils.helpers import ensure_timezone_aware
 
 router = APIRouter(
-    prefix="/screenshots",
+    prefix="",
     tags=["screenshots"],
     responses={404: {"description": "Not found"}},
 )
@@ -148,7 +148,7 @@ async def upload_screenshot(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.delete("/screenshots/delete")
+@router.delete("/delete")
 async def delete_screenshot(key: str):
     """Delete a screenshot."""
     try:
@@ -163,7 +163,7 @@ async def delete_screenshot(key: str):
             raise HTTPException(status_code=500, detail="Failed to delete screenshot from S3")
         
         # Also delete thumbnail if it exists
-        thumbnail_key = key.replace('.png', '-thumb.png')
+        thumbnail_key = key.replace('.jpg', '-thumb.jpg')
         try:
             s3_client.delete_object(
                 Bucket=S3_BUCKET_NAME,

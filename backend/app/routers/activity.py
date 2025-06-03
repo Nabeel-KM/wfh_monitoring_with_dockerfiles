@@ -7,11 +7,7 @@ from ..services.mongodb import get_database
 from ..models.database import Activity
 from ..utils.helpers import ensure_timezone_aware, normalize_app_names
 
-router = APIRouter(
-    prefix="/activity",
-    tags=["activity"],
-    responses={404: {"description": "Not found"}},
-)
+router = APIRouter()
 
 class SystemInfo(BaseModel):
     platform: str
@@ -32,7 +28,7 @@ class ActivityData(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-@router.post("/")
+@router.post("/activity")
 async def track_activity(data: ActivityData):
     """Track user activity and active applications."""
     try:
@@ -126,7 +122,7 @@ async def track_activity(data: ActivityData):
         print(f"Error in track_activity: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/history")
+@router.get("/activity_history")
 async def get_activity_history(
     username: str,
     start_time: Optional[datetime] = None,
@@ -184,7 +180,7 @@ async def get_activity_history(
         print(f"Error in get_activity_history: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/usage")
+@router.get("/app_usage")
 async def get_app_usage(
     username: str,
     start_time: Optional[datetime] = None,
@@ -219,20 +215,26 @@ async def get_app_usage(
         cursor = activities.find(query)
         activity_list = await cursor.to_list(length=None)
         
-        # Process activities
+        # Process app usage
         app_usage = {}
         for activity in activity_list:
-            app_name = activity.get("app_name", "Unknown")
-            duration = activity.get("total_time", 0)
-            
-            if app_name in app_usage:
-                app_usage[app_name] += duration
-            else:
-                app_usage[app_name] = duration
+            active_app = activity.get("active_app")
+            if active_app:
+                if active_app in app_usage:
+                    app_usage[active_app] += 1
+                else:
+                    app_usage[active_app] = 1
+        
+        # Normalize app names
+        normalized_usage = normalize_app_names(app_usage)
+        
+        # Sort by usage count
+        sorted_usage = dict(sorted(normalized_usage.items(), key=lambda x: x[1], reverse=True))
         
         return {
             "username": username,
-            "app_usage": app_usage,
+            "app_usage": sorted_usage,
+            "total_activities": len(activity_list),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         

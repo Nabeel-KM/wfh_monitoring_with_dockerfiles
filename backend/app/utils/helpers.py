@@ -13,26 +13,46 @@ def ensure_timezone_aware(dt: Optional[datetime]) -> Optional[datetime]:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
-def normalize_app_names(app_usage: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize application names to reduce database size."""
+def normalize_app_names(app_usage: Dict[str, int]) -> Dict[str, int]:
+    """Normalize application names for consistent display"""
     normalized = {}
-    for app_name, duration in app_usage.items():
-        # Convert to lowercase and remove common prefixes/suffixes
-        normalized_name = app_name.lower()
-        normalized_name = normalized_name.replace("microsoft ", "")
-        normalized_name = normalized_name.replace("google ", "")
-        normalized_name = normalized_name.replace("mozilla ", "")
-        normalized_name = normalized_name.replace("mozilla/", "")
-        normalized_name = normalized_name.replace("chrome", "browser")
-        normalized_name = normalized_name.replace("firefox", "browser")
-        normalized_name = normalized_name.replace("safari", "browser")
-        normalized_name = normalized_name.replace("edge", "browser")
+    browser_names = {
+        'chrome': 'Google Chrome',
+        'google-chrome': 'Google Chrome',
+        'google chrome': 'Google Chrome',
+        'chromium': 'Google Chrome',
+        'chromium-browser': 'Google Chrome',
+        'firefox': 'Firefox',
+        'mozilla firefox': 'Firefox',
+        'mozilla-firefox': 'Firefox',
+        'safari': 'Safari',
+        'microsoft-edge': 'Microsoft Edge',
+        'msedge': 'Microsoft Edge',
+        'edge': 'Microsoft Edge',
+        'brave': 'Brave',
+        'brave-browser': 'Brave',
+        'opera': 'Opera',
+        'opera-browser': 'Opera',
+        'vivaldi': 'Vivaldi',
+        'vivaldi-browser': 'Vivaldi'
+    }
+    
+    for app, time in app_usage.items():
+        # Convert to lowercase for case-insensitive matching
+        app_lower = app.lower()
         
-        # Add duration to normalized name
-        if normalized_name in normalized:
-            normalized[normalized_name] += duration
+        # Check if it's a browser
+        if app_lower in browser_names:
+            normalized_name = browser_names[app_lower]
         else:
-            normalized[normalized_name] = duration
+            # For non-browser apps, just capitalize each word
+            normalized_name = ' '.join(word.capitalize() for word in app.split())
+        
+        # Add to normalized dict, combining times for same normalized names
+        if normalized_name in normalized:
+            normalized[normalized_name] += time
+        else:
+            normalized[normalized_name] = time
     
     return normalized
 

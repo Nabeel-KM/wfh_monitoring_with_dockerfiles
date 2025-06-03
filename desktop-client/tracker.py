@@ -794,25 +794,24 @@ def upload_screenshot_to_backend(screenshot_bytes):
 
 
 def screenshot_worker():
-    """Worker thread for processing screenshots"""
-    while running:
+    """Worker thread for taking and uploading screenshots periodically"""
+    global last_screenshot_time
+    
+    while True:
         try:
-            # Check if it's time to take a screenshot
             current_time = time.time()
+            
+            # Check if it's time to take a screenshot
             if current_time - last_screenshot_time >= SCREENSHOT_INTERVAL:
-                # Take and upload screenshot
-                screenshot_bytes = take_screenshot()
-                if screenshot_bytes:
-                    upload_screenshot_to_backend(screenshot_bytes)
-                    global last_screenshot_time
-                    last_screenshot_time = current_time
+                take_and_upload_screenshot()
+                last_screenshot_time = current_time
                 
             # Sleep for a short interval to prevent high CPU usage
             time.sleep(10)
             
         except Exception as e:
             log_message(f"❌ Error in screenshot worker: {e}")
-            time.sleep(30)  # Wait longer on error
+            time.sleep(60)  # Sleep longer on error
 
 
 def take_and_upload_screenshot():

@@ -39,6 +39,17 @@ class DashboardData(BaseModel):
 async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) -> Dict[str, Any]:
     """Get dashboard data for a single user"""
     try:
+        # Initialize variables with default values
+        most_used_app = None
+        most_used_app_time = 0
+        total_active_time = 0
+        total_session_hours = 0
+        app_usage = []
+        daily_summary = None
+        latest_session = None
+        first_join = None
+        last_leave = None
+
         db = await get_database()
         if db is None:
             raise HTTPException(status_code=500, detail="Database connection not available")
@@ -68,7 +79,6 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
         }, sort=[("stop_time", -1)])
         
         # Calculate total session time from first join to last leave
-        total_session_hours = 0
         if first_join and last_leave and first_join.get("start_time") and last_leave.get("stop_time"):
             first_join_time = ensure_timezone_aware(first_join["start_time"])
             last_leave_time = ensure_timezone_aware(last_leave["stop_time"])
@@ -102,13 +112,10 @@ async def get_user_dashboard_data(user: Dict[str, Any], current_date: datetime) 
         })
 
         # Calculate total active time
-        total_active_time = 0
         if daily_summary and "total_active_time" in daily_summary:
             total_active_time = daily_summary["total_active_time"]
 
         # Get most active app
-        most_active_app = None
-        most_used_app_time = 0
         if app_usage:
             most_active_app = max(app_usage, key=lambda x: x.get("total_time", 0))
             most_used_app = most_active_app.get("app_name")

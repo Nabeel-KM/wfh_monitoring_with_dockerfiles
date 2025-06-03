@@ -47,7 +47,7 @@ s3_client = boto3.client(
 
 S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 
-@router.get("/screenshots")
+@router.get("/")
 async def list_screenshots(username: str, date: str):
     """Get screenshots for a user on a specific date."""
     try:
@@ -71,10 +71,10 @@ async def list_screenshots(username: str, date: str):
         screenshots = []
         if 'Contents' in response:
             for obj in response['Contents']:
-                if obj['Key'].endswith('.png'):
+                if obj['Key'].endswith('.jpg'):  # Changed from .png to .jpg to match upload format
                     url = f"https://{S3_BUCKET_NAME}.s3.{os.getenv('AWS_REGION', 'us-east-1')}.amazonaws.com/{obj['Key']}"
                     # Generate thumbnail URL if available
-                    thumbnail_key = obj['Key'].replace('.png', '-thumb.png')
+                    thumbnail_key = obj['Key'].replace('.jpg', '-thumb.jpg')  # Changed from .png to .jpg
                     thumbnail_url = f"https://{S3_BUCKET_NAME}.s3.{os.getenv('AWS_REGION', 'us-east-1')}.amazonaws.com/{thumbnail_key}"
                     
                     screenshots.append(ScreenshotData(

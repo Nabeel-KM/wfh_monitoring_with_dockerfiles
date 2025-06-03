@@ -50,7 +50,7 @@ else:  # Linux
     LAST_SYNC_FILE = os.path.join(BASE_DIR, 'cache', 'last_sync.json')
 
 # Constants
-API = os.getenv('API_URL', 'https://api-wfh.kryptomind.net/api/activity')
+API = os.getenv('API_URL', 'https://api-wfh.kryptomind.net/api')
 SESSION_STATUS_API = os.getenv('SESSION_STATUS_API', 'https://api-wfh.kryptomind.net/api/session_status')
 USER = os.getenv('USER_ID', 'default_user')
 IDLE_THRESHOLD = int(os.getenv('IDLE_THRESHOLD', '300'))  # 5 minutes
@@ -770,9 +770,9 @@ def upload_screenshot_to_backend(screenshot_bytes):
             'hash': file_hash
         }
         
-        # Send to backend API
+        # Send to backend API - using the correct endpoint
         response = requests.post(
-            f"{API}/screenshots/upload",
+            f"{API}/screenshots/upload",  # Updated to match FastAPI router prefix
             files=files,
             data=data,
             timeout=30
@@ -784,7 +784,7 @@ def upload_screenshot_to_backend(screenshot_bytes):
         else:
             log_message(f"❌ Failed to upload screenshot: {response.status_code} - {response.text}")
             return False
-            
+
     except requests.exceptions.RequestException as e:
         log_message(f"❌ Error uploading screenshot: {e}")
         return False

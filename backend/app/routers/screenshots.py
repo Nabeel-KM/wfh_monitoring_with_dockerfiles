@@ -116,7 +116,8 @@ async def list_screenshots(username: str, date: str):
 async def upload_screenshot(
     screenshot: UploadFile = File(...),
     username: str = Form(...),
-    timestamp: str = Form(...),
+    date_folder: str = Form(...),
+    filename: str = Form(...),
     hash: str = Form(...)
 ):
     """Handle screenshot uploads from the tracker app"""
@@ -129,8 +130,8 @@ async def upload_screenshot(
         if file_hash != hash:
             raise HTTPException(status_code=400, detail="File hash verification failed")
         
-        # Generate S3 filename
-        filename = f"{username}/{datetime.now(timezone.utc).strftime('%Y-%m-%d')}/{timestamp}_{hash[:8]}.jpg"
+        # Generate S3 filename using the provided date_folder and filename
+        s3_filename = f"{username}/{date_folder}/{filename}"
         
         # Initialize S3 client
         s3_client = get_s3_client()
@@ -139,20 +140,20 @@ async def upload_screenshot(
         # Upload to S3
         s3_client.put_object(
             Bucket=S3_BUCKET_NAME,
-            Key=filename,
+            Key=s3_filename,
             Body=screenshot_bytes,
-            ContentType='image/jpeg',
+            ContentType='image/png',
             Metadata={
                 'user': username,
-                'date': datetime.now(timezone.utc).strftime('%Y-%m-%d'),
+                'date': date_folder,
                 'hash': hash,
-                'timestamp': timestamp
+                'filename': filename
             }
         )
         
         return JSONResponse(
             status_code=200,
-            content={"message": "Screenshot uploaded successfully", "filename": filename}
+            content={"message": "Screenshot uploaded successfully", "filename": s3_filename}
         )
         
     except Exception as e:

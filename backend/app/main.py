@@ -152,7 +152,7 @@ async def shutdown_event():
     
     logger.info("Application shutdown complete")
 
-@app.get("/api")
+@app.get("/")
 async def root():
     """Root endpoint for health check."""
     return {"status": "ok", "message": "WFH Monitoring API is running"} 

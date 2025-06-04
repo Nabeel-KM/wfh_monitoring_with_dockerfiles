@@ -118,7 +118,8 @@ async def upload_screenshot(
     username: str = Form(...),
     date_folder: str = Form(...),
     filename: str = Form(...),
-    hash: str = Form(...)
+    hash: str = Form(...),
+    timestamp: str = Form(...)
 ):
     """Handle screenshot uploads from the tracker app"""
     try:
@@ -128,37 +129,56 @@ async def upload_screenshot(
         # Verify file hash
         file_hash = hashlib.sha256(screenshot_bytes).hexdigest()
         if file_hash != hash:
-            raise HTTPException(status_code=400, detail="File hash verification failed")
-        
-        # Generate S3 filename using the provided date_folder and filename
-        s3_filename = f"{username}/{date_folder}/{filename}"
+            raise HTTPException(
+                status_code=400, 
+                detail="File hash verification failed"
+            )
+
+        # Generate S3 key using the provided structure
+        s3_key = f"{username}/{date_folder}/{filename}"
         
         # Initialize S3 client
         s3_client = get_s3_client()
         S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME', 'km-wfh-monitoring-bucket')
         
-        # Upload to S3
-        s3_client.put_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=s3_filename,
-            Body=screenshot_bytes,
-            ContentType='image/png',
-            Metadata={
-                'user': username,
-                'date': date_folder,
-                'hash': hash,
-                'filename': filename
-            }
-        )
-        
-        return JSONResponse(
-            status_code=200,
-            content={"message": "Screenshot uploaded successfully", "filename": s3_filename}
-        )
-        
+        # Upload to S3 with metadata
+        try:
+            s3_client.put_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=s3_key,
+                Body=screenshot_bytes,
+                ContentType='image/png',
+                Metadata={
+                    'username': username,
+                    'date': date_folder,
+                    'hash': hash,
+                    'filename': filename,
+                    'timestamp': timestamp,
+                    'upload_time': datetime.now(timezone.utc).isoformat()
+                }
+            )
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "message": "Screenshot uploaded successfully",
+                    "filename": s3_key
+                }
+            )
+            
+        except ClientError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"S3 upload failed: {str(e)}"
+            )
+            
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"Screenshot upload failed: {str(e)}"
+        )
 
 # async def upload_screenshot(
 #     username: str,
@@ -264,4 +284,4 @@ async def delete_screenshot(key: str):
         raise
     except Exception as e:
         print(f"Error in delete_screenshot: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))

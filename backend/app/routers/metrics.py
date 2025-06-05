@@ -23,6 +23,14 @@ class MetricsData(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+def serialize_date(date_obj):
+    """Helper function to serialize date objects"""
+    if hasattr(date_obj, 'isoformat'):
+        return date_obj.isoformat()
+    if hasattr(date_obj, 'strftime'):
+        return date_obj.strftime('%Y-%m-%d')
+    return str(date_obj)
+
 @router.get("/metrics/system")
 async def get_system_metrics():
     """Get system-wide metrics."""
@@ -97,11 +105,11 @@ async def get_system_metrics():
         ]
         daily_stats = await daily_summaries.aggregate(pipeline).to_list(length=None)
         
-        # Process daily stats
+        # Process daily stats with date serialization
         processed_daily_stats = []
         for stat in daily_stats:
             processed_daily_stats.append({
-                "date": stat["_id"].strftime('%Y-%m-%d') if hasattr(stat["_id"], 'strftime') else str(stat["_id"]),
+                "date": serialize_date(stat["_id"]),
                 "total_screen_share": stat["total_screen_share"],
                 "total_activities": stat["total_activities"],
                 "unique_users": len(stat["unique_users"])
@@ -201,22 +209,23 @@ async def get_user_metrics(
         # Calculate total screen share time
         total_screen_share = sum(session.get("screen_share_time", 0) for session in sessions_list)
         
-        # Process daily summaries
+        # Process daily summaries with date serialization
         processed_summaries = []
         for summary in daily_summaries_list:
             processed_summaries.append({
-                "date": summary["date"].strftime('%Y-%m-%d') if hasattr(summary["date"], 'strftime') else str(summary["date"]),
+                "date": serialize_date(summary["date"]),
                 "total_screen_share_time": summary.get("total_screen_share_time", 0),
                 "total_activities": summary.get("total_activities", 0),
                 "app_usage": summary.get("app_usage", {})
             })
-        
-        return {
+
+        # Ensure all dates in the response are serialized
+        response_data = {
             "username": username,
             "display_name": user.get("display_name", username),
             "date_range": {
-                "start": start_date.isoformat(),
-                "end": end_date.isoformat()
+                "start": serialize_date(start_date),
+                "end": serialize_date(end_date)
             },
             "total_sessions": len(sessions_list),
             "total_activities": len(activities_list),
@@ -225,6 +234,8 @@ async def get_user_metrics(
             "daily_summaries": processed_summaries,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
+        
+        return response_data
         
     except HTTPException:
         raise

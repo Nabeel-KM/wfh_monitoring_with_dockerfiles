@@ -25,11 +25,17 @@ class MetricsData(BaseModel):
 
 def serialize_date(date_obj):
     """Helper function to serialize date objects"""
-    if hasattr(date_obj, 'isoformat'):
-        return date_obj.isoformat()
-    if hasattr(date_obj, 'strftime'):
-        return date_obj.strftime('%Y-%m-%d')
-    return str(date_obj)
+    try:
+        if isinstance(date_obj, datetime):
+            return date_obj.strftime('%Y-%m-%d')
+        elif hasattr(date_obj, 'strftime'):
+            return date_obj.strftime('%Y-%m-%d')
+        elif isinstance(date_obj, str):
+            return date_obj
+        return str(date_obj)
+    except Exception as e:
+        print(f"Error serializing date: {e}")
+        return str(date_obj)
 
 @router.get("/metrics/system")
 async def get_system_metrics():
@@ -94,26 +100,50 @@ async def get_system_metrics():
         
         # Get daily summaries for the week
         pipeline = [
-            {"$match": {"date": {"$gte": week_start.date()}}},
-            {"$group": {
-                "_id": "$date",
-                "total_screen_share": {"$sum": "$total_screen_share_time"},
-                "total_activities": {"$sum": "$total_activities"},
-                "unique_users": {"$addToSet": "$user_id"}
-            }},
+            {
+                "$match": {
+                    "date": {"$gte": week_start.date()}
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$date",
+                    "total_screen_share": {"$sum": "$total_screen_share_time"},
+                    "total_activities": {"$sum": "$total_activities"},
+                    "unique_users": {"$addToSet": "$user_id"}
+                }
+            },
+            {
+                "$project": {
+                    "_id": 1,
+                    "date": {
+                        "$dateToString": {
+                            "format": "%Y-%m-%d",
+                            "date": "$_id"
+                        }
+                    },
+                    "total_screen_share": 1,
+                    "total_activities": 1,
+                    "unique_users": 1
+                }
+            },
             {"$sort": {"_id": 1}}
         ]
         daily_stats = await daily_summaries.aggregate(pipeline).to_list(length=None)
         
-        # Process daily stats with date serialization
+        # Process daily stats with safe date serialization
         processed_daily_stats = []
         for stat in daily_stats:
-            processed_daily_stats.append({
-                "date": serialize_date(stat["_id"]),
-                "total_screen_share": stat["total_screen_share"],
-                "total_activities": stat["total_activities"],
-                "unique_users": len(stat["unique_users"])
-            })
+            try:
+                processed_daily_stats.append({
+                    "date": stat.get("date") or serialize_date(stat["_id"]),
+                    "total_screen_share": stat["total_screen_share"],
+                    "total_activities": stat["total_activities"],
+                    "unique_users": len(stat["unique_users"])
+                })
+            except Exception as e:
+                print(f"Error processing stat: {e}")
+                continue
         
         return {
             "total_users": total_users,
@@ -126,7 +156,7 @@ async def get_system_metrics():
                 for app in top_apps
             ],
             "daily_stats": processed_daily_stats,
-            "timestamp": now.isoformat()
+            "timestamp": now.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
         }
         
     except Exception as e:

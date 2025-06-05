@@ -101,7 +101,7 @@ async def get_system_metrics():
         processed_daily_stats = []
         for stat in daily_stats:
             processed_daily_stats.append({
-                "date": stat["_id"].isoformat(),
+                "date": stat["_id"].strftime('%Y-%m-%d') if hasattr(stat["_id"], 'strftime') else str(stat["_id"]),
                 "total_screen_share": stat["total_screen_share"],
                 "total_activities": stat["total_activities"],
                 "unique_users": len(stat["unique_users"])
@@ -205,7 +205,7 @@ async def get_user_metrics(
         processed_summaries = []
         for summary in daily_summaries_list:
             processed_summaries.append({
-                "date": summary["date"].isoformat(),
+                "date": summary["date"].strftime('%Y-%m-%d') if hasattr(summary["date"], 'strftime') else str(summary["date"]),
                 "total_screen_share_time": summary.get("total_screen_share_time", 0),
                 "total_activities": summary.get("total_activities", 0),
                 "app_usage": summary.get("app_usage", {})
@@ -230,4 +230,4 @@ async def get_user_metrics(
         raise
     except Exception as e:
         print(f"Error in get_user_metrics: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
